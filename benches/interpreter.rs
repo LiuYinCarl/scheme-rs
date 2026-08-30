@@ -14,8 +14,10 @@ fn run(src: &str) {
 fn bench_eval(c: &mut Criterion) {
     c.bench_function("fib_recursion_20", |b| {
         b.iter(|| {
-            run("(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
-                 (fib 20)")
+            run(
+                "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+                 (fib 20)",
+            )
         })
     });
 
