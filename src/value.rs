@@ -112,6 +112,23 @@ pub fn unbound_msg(s: Sym) -> String {
 
 pub struct Pair(pub Value, pub Value);
 
+impl Drop for Pair {
+    /// 长 cdr 链（如 10 万元素的表）按默认方式 drop 会沿链递归，深度
+    /// 足以撑爆 Rust 栈。这里改为迭代拆链：逐个把后继节点的 cdr 换成
+    /// Nil 再释放，递归深度恒为 1。深层 car 树仍可能递归（实践中罕见）。
+    fn drop(&mut self) {
+        let mut cur = std::mem::replace(&mut self.1, Value::Nil);
+        while let Value::Pair(rc) = cur {
+            match Rc::try_unwrap(rc) {
+                Ok(cell) => {
+                    cur = std::mem::replace(&mut cell.into_inner().1, Value::Nil);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 pub struct Closure {
     pub fixed: Vec<Sym>,
     pub rest: Option<Sym>,

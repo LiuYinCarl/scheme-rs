@@ -25,17 +25,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: fmt
-        run: cargo fmt --check
-
-      - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      # Integration tests spawn the scheme-rs binary as a subprocess to run
-      # the three Scheme suites (tests/scm/*); this works on Linux CI too
-      # since CARGO_BIN_EXE_scheme-rs points at the just-built binary.
-      - name: test
-        run: cargo test
+      # Single entry point shared with local development: fmt + clippy +
+      # the full test suite (in-process Scheme suites and programs).
+      - name: fmt + clippy + test
+        run: bash scripts/test.sh
 
   coverage:
     name: coverage

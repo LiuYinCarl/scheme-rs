@@ -14,8 +14,8 @@ re-entry — without using native Rust recursion for evaluation.
 | chibi R5RS 套件（`tests/scm/r5rs-tests.scm`） | **188/189**（1 例白名单：大小写冲突，见[说明](docs/testing.md)） |
 | SISC R5RS pitfalls（`tests/scm/r5rs_pitfall.scm`） | **22/22**（letrec+call/cc、多射续延、卫生宏、TCO 等最刁钻用例） |
 | R5RS 报告示例提取套件（`tests/scm/r5rs-examples.scm`） | **253/253** |
-| 真实程序（`programs/`：11 个 Gabriel 基准 + SICP 元循环/amb 求值器） | **13/13 全过**，含 nboyer（Boyer-Moore 定理证明）精确命中 **95024 rewrites** |
-| Rust 单元 + 集成测试 | **34 个**（27 单元 + 3 REPL + 4 集成，集成含三套件与真实程序） |
+| 真实程序（`tests/scm/programs/`：11 个 Gabriel 基准 + SICP 元循环/amb 求值器） | **13/13 全过**，含 nboyer（Boyer-Moore 定理证明）精确命中 **95024 rewrites** |
+| Rust 单元 + 集成测试 | **47 个**（27 单元 + 3 REPL + 17 集成；统一入口 `scripts/test.sh`） |
 | 行覆盖率（cargo-llvm-cov） | **75.17%**（CI 门禁 70） |
 | CI | fmt / clippy / test（**Ubuntu + macOS**）/ coverage / bench 全绿 |
 

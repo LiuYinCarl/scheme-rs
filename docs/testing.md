@@ -3,10 +3,25 @@
 scheme-rs 的验证分五层：三套 Scheme 套件、真实程序实战、Rust 单元/
 集成测试、覆盖率、criterion 基准。
 
+## 统一入口：scripts/test.sh
+
+本地与 CI 共用同一入口（CI 的 test job 就是 `bash scripts/test.sh`）：
+
+```
+scripts/test.sh              # 完整：cargo fmt --check → clippy → cargo test
+scripts/test.sh --quick      # 快速冒烟：cargo test，跳过最慢的 4 个程序用例
+scripts/test.sh --release    # 完整流程，release profile
+scripts/test.sh --coverage   # cargo llvm-cov（阈值 70，与 CI 一致）
+```
+
 ## 三套 Scheme 套件（tests/scm/）
 
-由 `tests/r5rs_suites.rs` 用 `env!("CARGO_BIN_EXE_scheme-rs")` 起子进程
-运行真实二进制并检查输出（此方式在 Linux CI 上同样工作）：
+由 `tests/r5rs_suites.rs` **进程内**运行（库 API 求值文件内容，不起
+子进程）：chibi/examples 直接查套件自己的计数变量
+（`*tests-run*`/`*tests-passed*`/`*tests-failed*`），pitfall 无计数器，
+用 string port 替换 `current-output-port` 捕获全部输出后检查无
+`Failure:` 且出现完成标记 `Passed: 8.3`。仅 `cli::smoke_run_file` 一个
+子进程冒烟测试覆盖 CLI 文件执行路径：
 
 | 套件 | 来源 | 覆盖点 | 结果 |
 |---|---|---|---|
@@ -33,17 +48,25 @@ constants"），且报告 6.3.3 的示例就是 `(symbol->string 'Martin)` ⇒
 报告（reader 折叠大小写，`string->symbol` 保持原样，故 pitfall 6.1
 仍通过）。pitfall 与 examples 的白名单为空。
 
-判定方式：chibi 套件不允许未在白名单内的 `[FAIL]` 行；pitfall 不允许
-`Failure:` 行；examples 不允许 `FAIL:` 行；三者都要求出现完成标记
-（"out of ... passed" / "Passed: 8.3"）且进程 exit 0。
+判定方式：chibi 不允许未在白名单内的 `[FAIL]` 行且计数恰为
+(189 run, 188 passed)；pitfall 不允许 `Failure:` 行且必须跑到
+`Passed: 8.3`；examples 要求 `*tests-failed*` 为 0（当前 253 个用例）。
+三者都在同一测试进程内完成，不依赖子进程与 stdout 文本断言。
 
-## 真实程序实战（programs/）
+## 真实程序实战（tests/scm/programs/）
 
-`tests/r5rs_suites.rs` 的 `real_world_programs` 测试逐个运行
-`programs/` 下的第三方程序（每个文件末尾有驱动段，输出可校验结果），
-来源与许可证见 `programs/README.md`。全部 **13/13 通过**，且整个过程
-没有发现解释器 bug（仅有的两处适配是程序用了非 R5RS 特性：`when`
+`tests/r5rs_suites.rs` 的 `programs::*` 测试（每程序一个 #[test]，可
+被 cargo test 并行调度）从磁盘读取第三方程序文件——`.scm` 文件是单一
+事实来源，不内嵌进 Rust 代码——进程内求值全文（文件自带驱动段与
+display），用 string port 捕获输出并逐行断言。来源与许可证见
+`tests/scm/programs/README.md`。全部 **13/13 通过**，且整个过程没有
+发现解释器求值 bug（仅有的两处适配是程序用了非 R5RS 特性：`when`
 宏 shim、SICP 的 `1+`/`-1+` 改名——后者本就不是合法 R5RS 标识符）。
+
+注：进程内测试还顺带暴露并修复了一个潜在健壮性问题——长 cdr 链
+（如 diviter 的 10 万元素表）在测试结束 drop 环境时会沿链递归爆
+Rust 栈；`src/value.rs` 的 `Pair::drop` 已改为迭代拆链（子进程方式
+下进程退出不扫堆，所以此前从未暴露）。
 
 | 程序 | 验证内容 | 预期 vs 实际 | 本地耗时 |
 |---|---|---|---|
@@ -98,8 +121,9 @@ constants"），且报告 6.3.3 的示例就是 `(symbol->string 'Martin)` ⇒
 
 ## Rust 测试结构
 
-- `tests/r5rs_suites.rs`（4 个集成测试）：上述三套件 +
-  `real_world_programs`（programs/ 下 13 个真实程序），均为子进程方式。
+- `tests/r5rs_suites.rs`（17 个测试）：`suites::*`（三套件进程内）、
+  `programs::*`（13 个真实程序进程内，各占一个测试以并行）、
+  `cli::smoke_run_file`（唯一的子进程冒烟测试）。
 - `tests/scheme_units.rs`（27 个）：reader/printer 往返、精确算术与
   进制、`#` 占位数字、inexact 整函数、超越函数、5×10⁵ 尾递归与各
   尾位置、call/cc 多射重入、dynamic-wind 逃逸/重入、syntax-rules
@@ -109,7 +133,7 @@ constants"），且报告 6.3.3 的示例就是 `(symbol->string 'Martin)` ⇒
 - `src/repl.rs` 内 `#[cfg(test)]`（3 个）：datum 完整性判断、补全
   词表生成、补全起点计算。
 
-合计 34 个测试（27 + 3 + 4），CI 在 Ubuntu 与 macOS 双平台运行。
+合计 47 个测试（27 单元 + 3 REPL + 17 集成），CI 在 Ubuntu 与 macOS 双平台运行。
 
 ## 覆盖率
 

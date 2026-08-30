@@ -1,13 +1,13 @@
-# programs/ — 真实 R5RS 程序实战验证
+# tests/scm/programs/ — 真实 R5RS 程序实战验证
 
 本目录收集真实存在的 Scheme 程序，用本仓库的解释器原样运行，验证实战
 兼容性。每个文件末尾追加了 `;;; ===== driver ... =====` 标记的驱动段
 （显示可校验的结果），该段不属于原程序。
 
-`tests/r5rs_suites.rs` 的 `real_world_programs` 集成测试逐个运行这些
-文件并断言关键输出。
+`tests/r5rs_suites.rs` 的 `programs::*` 集成测试逐个运行这些
+文件（进程内求值，string port 捕获输出）并断言关键输出。
 
-## Gabriel 基准程序（programs/gabriel/）
+## Gabriel 基准程序（tests/scm/programs/gabriel/）
 
 来源：<https://github.com/ecraven/r7rs-benchmarks>（`src/` 目录的单
 文件；源自 Dick Gabriel 的经典著作 *Performance and Evaluation of Lisp
@@ -36,7 +36,7 @@ Systems*，传统上为公有领域，nboyer.scm 文件头明确标注
 `triangl.scm` 也在该套件中，但 `test(22,1)` 在本解释器上需 ~53s，
 超出 CI 预算，故未收录。
 
-## SICP（programs/sicp/）
+## SICP（tests/scm/programs/sicp/）
 
 来源：*Structure and Interpretation of Computer Programs*（Abelson &
 Sussman），全书以 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)

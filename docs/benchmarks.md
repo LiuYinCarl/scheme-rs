@@ -34,7 +34,7 @@ cargo bench --bench interpreter -- \
 fib 30.1 ms / tail 214 ms / map 4.6 ms / mix 790 µs / reader 246 µs——
 与现值一致，性能无回归。
 
-## 实战程序耗时（programs/）
+## 实战程序耗时（tests/scm/programs/）
 
 本地实测（`/usr/bin/time`，同一台 M5，debug build 的解释器二进制——
 即 `cargo build` 默认产物；release 构建会更快）：
@@ -77,7 +77,7 @@ fib 30.1 ms / tail 214 ms / map 4.6 ms / mix 790 µs / reader 246 µs——
 cargo bench --bench interpreter          # criterion 基准（默认时长，较慢）
 cargo bench --bench interpreter -- \
   --warm-up-time 1 --measurement-time 3 --sample-size 10   # CI 同款快速档
-cargo build && time ./target/debug/scheme-rs programs/gabriel/nboyer.scm
+cargo build && time ./target/debug/scheme-rs tests/scm/programs/gabriel/nboyer.scm
 ```
 
 CI 的 bench job 只做记录（artifact），不设回归门禁。
