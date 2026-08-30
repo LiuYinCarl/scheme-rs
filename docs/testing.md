@@ -59,9 +59,19 @@ constants"），且报告 6.3.3 的示例就是 `(symbol->string 'Martin)` ⇒
 被 cargo test 并行调度）从磁盘读取第三方程序文件——`.scm` 文件是单一
 事实来源，不内嵌进 Rust 代码——进程内求值全文（文件自带驱动段与
 display），用 string port 捕获输出并逐行断言。来源与许可证见
-`tests/scm/programs/README.md`。全部 **13/13 通过**，且整个过程没有
+`tests/scm/programs/README.md`。全部 **15/15 通过**，且整个过程没有
 发现解释器求值 bug（仅有的两处适配是程序用了非 R5RS 特性：`when`
 宏 shim、SICP 的 `1+`/`-1+` 改名——后者本就不是合法 R5RS 标识符）。
+
+大型程序引入过程中发现并修复了一个真实的宏展开 bug：`expand_ell`
+对某层 ellipsis 做绑定下降时按索引处理了作用域里**所有** Many 绑定
+（包括长度不同的无关模式变量），导致 schelog 的 %rel 形态（外层迭代
+与内层迭代变量不同）误报 "ellipsis length mismatch"。已修正为只下降
+该模板项实际使用的变量（`tests/scheme_units.rs` 的
+`syntax_rules_ellipsis_unrelated_lengths` 回归测试）。
+
+tex2page（Dorai Sitaram，~12k 行）评估后放弃：现版本是 `#lang racket`
+程序（`require` 大量 Racket 库），不属于 R5RS shim 能覆盖的范围。
 
 注：进程内测试还顺带暴露并修复了一个潜在健壮性问题——长 cdr 链
 （如 diviter 的 10 万元素表）在测试结束 drop 环境时会沿链递归爆
@@ -83,6 +93,8 @@ Rust 栈；`src/value.rs` 的 `Pair::drop` 已改为迭代拆链（子进程方�
 | `gabriel/nboyer.scm` | **Boyer-Moore 定理证明基准**（合一、重写、循环结构术语） | **95024 = 95024 rewrites，精确命中文件记录值** | 3.38 s |
 | `sicp/mceval.scm` | SICP 4.1 元循环求值器 | fact=3628800、fib=144、高阶 42、map=(1 4 9 16)、let=3、guest 尾递归 done | 2.61 s |
 | `sicp/amb.scm` | SICP 4.3 amb 非确定性求值器 | (3 20)、(1 2 3 4)、(1 6)，回溯全部正确 | 0.02 s |
+| `sicp/regmach.scm`（886 行） | SICP 第 5 章寄存器机器模拟器 + 编译器 | factorial 机器 120、编译执行 fib(10)=55 | 0.23 s |
+| `logic/schelog.scm`（740 行） | Schelog（Prolog-in-Scheme，syntax-rules + call/cc 重度使用） | 家谱查询、回溯、%member/%append/%is 全部正确 | 0.02 s |
 
 耗时为 2026-08-30 在 Apple M5 上的实测（debug build）；`triangl.scm`
 结果正确但单次 ~53 s 超 CI 预算，未收录。
@@ -122,7 +134,7 @@ Rust 栈；`src/value.rs` 的 `Pair::drop` 已改为迭代拆链（子进程方�
 ## Rust 测试结构
 
 - `tests/r5rs_suites.rs`（17 个测试）：`suites::*`（三套件进程内）、
-  `programs::*`（13 个真实程序进程内，各占一个测试以并行）、
+  `programs::*`（15 个真实程序进程内，各占一个测试以并行）、
   `cli::smoke_run_file`（唯一的子进程冒烟测试）。
 - `tests/scheme_units.rs`（27 个）：reader/printer 往返、精确算术与
   进制、`#` 占位数字、inexact 整函数、超越函数、5×10⁵ 尾递归与各
@@ -133,7 +145,7 @@ Rust 栈；`src/value.rs` 的 `Pair::drop` 已改为迭代拆链（子进程方�
 - `src/repl.rs` 内 `#[cfg(test)]`（3 个）：datum 完整性判断、补全
   词表生成、补全起点计算。
 
-合计 47 个测试（27 单元 + 3 REPL + 17 集成），CI 在 Ubuntu 与 macOS 双平台运行。
+合计 50 个测试（28 单元 + 3 REPL + 19 集成），CI 在 Ubuntu 与 macOS 双平台运行。
 
 ## 覆盖率
 

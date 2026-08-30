@@ -36,6 +36,17 @@ Systems*，传统上为公有领域，nboyer.scm 文件头明确标注
 `triangl.scm` 也在该套件中，但 `test(22,1)` 在本解释器上需 ~53s，
 超出 CI 预算，故未收录。
 
+## 大型程序（logic/ 与 sicp/ 新增）
+
+| 文件 | 行数 | 内容 | 来源与许可证 | 适配 |
+|---|---|---|---|---|
+| `logic/schelog.scm` | 740 | **Schelog**：Dorai Sitaram 的 Prolog-in-Scheme 逻辑编程嵌入（合一、失败续延、cut、%bag-of；syntax-rules + call/cc 重度使用） | <https://github.com/ds26gte/schelog>（公有领域） | 原实现宏用非 R5RS 的 `datum->syntax` 过程式转换器。已在文件内移植为 syntax-rules（文件中有完整移植说明）：`%is` 改为运行时求值（`schelog:arith`）；anaphoric 的 cut `!` 改为显式传名（`%cut-delimiter ! goal`） |
+| `sicp/regmach.scm` | 886 | **SICP 第 5 章**：寄存器机器模拟器（5.2）+ Scheme→寄存器机器编译器（5.5），含跑编译代码所需的第 4 章语法/环境子集 | SICP 文本（CC BY-SA 4.0），按书整理为单文件 | 无（纯 R5RS） |
+
+驱动验证：
+- schelog：家谱数据库 + grandparent 规则、%which/%more 回溯、schelog 自带的 %member/%append、%is 算术 ⇒ `((who joe))`、`((who alice))`、`#f`、`((x a/b/c))`、`((xs ...) (ys ...))` 两段、`((x 42))`
+- regmach：5.1 手写 factorial 机器 ⇒ `120`；5.5 编译器编译 fib(10) 并在模拟器上执行 ⇒ `55`
+
 ## SICP（tests/scm/programs/sicp/）
 
 来源：*Structure and Interpretation of Computer Programs*（Abelson &

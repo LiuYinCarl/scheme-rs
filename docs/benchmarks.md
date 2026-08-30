@@ -54,6 +54,8 @@ fib 30.1 ms / tail 214 ms / map 4.6 ms / mix 790 µs / reader 246 µs——
 | **`gabriel/nboyer.scm`** | **Boyer-Moore 定理证明基准** | **95024 rewrites（精确命中）** | **3.38 s** |
 | `sicp/mceval.scm` | SICP 4.1 元循环求值器（fact/fib/高阶/map/let/guest 尾递归） | 全部正确 | 2.61 s |
 | `sicp/amb.scm` | SICP 4.3 amb 非确定性求值器（回溯搜索） | 全部正确 | 0.02 s |
+| `sicp/regmach.scm` | SICP 第 5 章寄存器机器模拟器 + 编译器（编译并执行 fib(10)） | 120 / 55 | 0.23 s |
+| `logic/schelog.scm` | Schelog Prolog 嵌入（家谱查询 + 回溯） | 全部正确 | 0.02 s |
 
 亮点：**nboyer(0) 以 ≈ 28k rewrites/s 的速度精确命中 95024 次重写**。
 这个基准做大量合一匹配、符号记录查找与 cons 分配，是解释器在真实

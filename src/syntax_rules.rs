@@ -410,16 +410,31 @@ impl<'a> Expander<'a> {
             Some(Match::Many(v)) => v.len(),
             _ => 0,
         };
+        // 参与本层迭代的只有该模板项实际使用的 ellipsis 变量；要求它们
+        // 长度一致（R5RS 要求同一层 ellipsis 的各变量等长）。作用域里
+        // 其它的绑定（比如长度不同的另一组模式变量）原样透传，不参与
+        // 本层下降——否则会对无关绑定按索引取值而误报长度不匹配。
+        for var in &vars {
+            if let Some(Match::Many(v)) = b.get(var) {
+                if v.len() != n {
+                    return Err("syntax-rules: ellipsis length mismatch".to_string());
+                }
+            }
+        }
         let mut out = Vec::new();
         for i in 0..n {
             let mut sub: Bindings = Bindings::new();
             for (key, m) in b {
-                let nm = match m {
-                    Match::Many(v) => v
-                        .get(i)
-                        .cloned()
-                        .ok_or_else(|| "syntax-rules: ellipsis length mismatch".to_string())?,
-                    one => one.clone(),
+                let nm = if vars.contains(key) {
+                    match m {
+                        Match::Many(v) => v
+                            .get(i)
+                            .cloned()
+                            .ok_or_else(|| "syntax-rules: ellipsis length mismatch".to_string())?,
+                        one => one.clone(),
+                    }
+                } else {
+                    m.clone()
                 };
                 sub.insert(*key, nm);
             }

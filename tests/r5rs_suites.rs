@@ -196,6 +196,27 @@ mod programs {
             &["(3 20)", "(1 2 3 4)", "(1 6)"],
         );
     }
+    #[test]
+    fn regmach() {
+        check_program("tests/scm/programs/sicp/regmach.scm", &["120", "55"]);
+    }
+    #[test]
+    fn schelog() {
+        check_program(
+            "tests/scm/programs/logic/schelog.scm",
+            &[
+                "((who joe))",
+                "((who alice))",
+                "#f",
+                "((x a))",
+                "((x b))",
+                "((x c))",
+                "((xs ()) (ys (1 2 3)))",
+                "((xs (1)) (ys (2 3)))",
+                "((x 42))",
+            ],
+        );
+    }
 }
 
 mod cli {

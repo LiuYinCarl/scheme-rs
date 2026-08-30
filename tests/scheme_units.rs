@@ -514,3 +514,27 @@ fn promise_memoization_and_reentry() {
         Ok(_) => panic!("self-forcing promise did not raise"),
     }
 }
+
+/// 模板某一层 ellipsis 的下降只应作用于该模板项实际使用的变量；作用域里
+/// 长度不同的其它 Many 绑定必须原样透传（schelog 移植时暴露的误报）。
+#[test]
+fn syntax_rules_ellipsis_unrelated_lengths() {
+    // x 绑 1 个、y 绑 3 个：展开 (y ...) 时不得因 x 长度不足而报错
+    assert_eq!(
+        one("(define-syntax m
+               (syntax-rules ()
+                 ((_ (x ...) (y ...)) (list y ... x ...))))
+             (m (1) (2 3 4))"),
+        "(2 3 4 1)"
+    );
+    // 嵌套：内层迭代使用的变量与外层不同（schelog %rel 的形态），
+    // 同一模板里不同位置的 ellipsis 各自独立迭代
+    assert_eq!(
+        one("(define-syntax m2
+               (syntax-rules ()
+                 ((_ (v ...) ((ch ...) sg ...) ...)
+                  (list '(v ...) '(ch ...) ...))))
+             (m2 (a) ((x 1) (y 2)) ((x 3) (y 4)))"),
+        "((a) (x 1) (x 3))"
+    );
+}
