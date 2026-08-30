@@ -108,3 +108,56 @@ fn r5rs_examples_suite() {
         KNOWN_FAILURES_EXAMPLES,
     );
 }
+
+/// Real-world R5RS programs (see programs/README.md). Each file ends with a
+/// driver section printing checkable results; assert the key output lines.
+/// Every program must finish well under 30 s on CI.
+#[test]
+fn real_world_programs() {
+    let cases: &[(&str, &[&str])] = &[
+        ("programs/gabriel/tak.scm", &["7"]),
+        ("programs/gabriel/cpstak.scm", &["7"]),
+        ("programs/gabriel/ack.scm", &["1021"]),
+        ("programs/gabriel/diviter.scm", &["50000"]),
+        ("programs/gabriel/fibc.scm", &["6765"]),
+        (
+            "programs/gabriel/deriv.scm",
+            &[
+                "(+ (* (* 3 x x) (+ (/ 0 3) (/ 1 x) (/ 1 x))) (* (* a x x) (+ (/ 0 a) (/ 1 x) (/ 1 x))) (* (* b x) (+ (/ 0 b) (/ 1 x))) 0)",
+                "done",
+            ],
+        ),
+        (
+            "programs/gabriel/destruc.scm",
+            &["((1 1 2) (1 1 1) (1 1 1 2) (1 1 1 1) (1 1 1 1 2) (1 1 1 1 2) (1 1 1 1 2) (1 1 1 1 2) (1 1 1 1 2) (1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 3))"],
+        ),
+        ("programs/gabriel/nqueens.scm", &["92"]),
+        ("programs/gabriel/puzzle.scm", &["2005"]),
+        (
+            "programs/gabriel/mazefun.scm",
+            &["((_ * _ _ _ _ _ _ _ _ _) (_ * * * * * * * _ * *) (_ _ _ * _ _ _ * _ _ _) (_ * _ * _ * _ * _ * _) (_ * _ _ _ * _ * _ * _) (* * _ * * * * * _ * _) (_ * _ _ _ _ _ _ _ * _) (_ * _ * _ * * * * * *) (_ _ _ * _ _ _ _ _ _ _) (_ * * * * * * * _ * *) (_ * _ _ _ _ _ _ _ _ _))"],
+        ),
+        ("programs/gabriel/nboyer.scm", &["95024"]),
+        (
+            "programs/sicp/mceval.scm",
+            &["3628800", "144", "42", "(1 4 9 16)", "3", "done"],
+        ),
+        ("programs/sicp/amb.scm", &["(3 20)", "(1 2 3 4)", "(1 6)"]),
+    ];
+    for (path, expected_lines) in cases {
+        let (stdout, stderr, ok) = run_suite(path);
+        assert!(ok, "{}: scheme-rs exited with error:\n{}", path, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        for (i, expected) in expected_lines.iter().enumerate() {
+            assert_eq!(
+                lines.get(i),
+                Some(expected),
+                "{}: output line {} mismatch:\nexpected: {}\ngot:\n{}",
+                path,
+                i,
+                expected,
+                stdout
+            );
+        }
+    }
+}
