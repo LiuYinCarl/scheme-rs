@@ -58,5 +58,5 @@
   ——正确性优先，未做小整数内联优化。
 - **字符串按 UTF-8 Rust String 存储**，`string-ref`/`string-set!` 按
   字符索引是 O(n)。
-- 当前基准见 testing.md 的 bench 一节（fib(20) ≈ 30ms、10 万尾递归
-  ≈ 214ms），性能不是本项目目标，正确性与可读性优先。
+- 当前基准见 [benchmarks.md](benchmarks.md)（fib(20) ≈ 29 ms、10 万尾
+  递归 ≈ 213 ms），性能不是本项目目标，正确性与可读性优先。

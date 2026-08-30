@@ -7,6 +7,33 @@ an explicit, persistent continuation stack (a trampoline), giving proper tail
 recursion, first-class multi-shot continuations, and correct `dynamic-wind`
 re-entry — without using native Rust recursion for evaluation.
 
+## 测试与性能（摘要）
+
+| 验证项 | 结果 |
+|---|---|
+| chibi R5RS 套件（`tests/scm/r5rs-tests.scm`） | **188/189**（1 例白名单：大小写冲突，见[说明](docs/testing.md)） |
+| SISC R5RS pitfalls（`tests/scm/r5rs_pitfall.scm`） | **22/22**（letrec+call/cc、多射续延、卫生宏、TCO 等最刁钻用例） |
+| R5RS 报告示例提取套件（`tests/scm/r5rs-examples.scm`） | **253/253** |
+| 真实程序（`programs/`：11 个 Gabriel 基准 + SICP 元循环/amb 求值器） | **13/13 全过**，含 nboyer（Boyer-Moore 定理证明）精确命中 **95024 rewrites** |
+| Rust 单元 + 集成测试 | **34 个**（27 单元 + 3 REPL + 4 集成，集成含三套件与真实程序） |
+| 行覆盖率（cargo-llvm-cov） | **75.17%**（CI 门禁 70） |
+| CI | fmt / clippy / test（**Ubuntu + macOS**）/ coverage / bench 全绿 |
+
+性能参考（criterion，2026-08-30 实测，Apple M5 / arm64 / 24GB / macOS 26.6，
+`cargo bench --bench interpreter`）：
+
+| 用例 | 耗时 | 说明 |
+|---|---|---|
+| `fib_recursion_20` | 29.3 ms | 普通递归调用 |
+| `tail_loop_100k` | 212.8 ms | 10 万次尾调用（常数栈，验证 TCO 路径） |
+| `map_over_1000` | 4.9 ms | 内建 map + 闭包调用 |
+| `string_and_number_mix` | 661 µs | BigInt 运算 + 字符串拼接 |
+| `reader_r5rs_tests_scm` | 231 µs | reader 解析 ~10KB 源码 |
+| **nboyer(0)**（实战程序，非 criterion） | **3.4 s / 95024 rewrites** | ≈ 28k rewrites/s |
+
+详情：[docs/testing.md](docs/testing.md)（测试体系与全部结果）、
+[docs/benchmarks.md](docs/benchmarks.md)（性能专题与复现方法）。
+
 ## Usage
 
 ```
@@ -25,7 +52,8 @@ cargo test                       # unit + integration tests (must be green)
 - [docs/syntax-rules.md](docs/syntax-rules.md) — 宏系统与重命名式卫生
 - [docs/numeric-tower.md](docs/numeric-tower.md) — 数字塔与精确性规则
 - [docs/r5rs-compliance.md](docs/r5rs-compliance.md) — R5RS 符合性清单与有意偏差
-- [docs/testing.md](docs/testing.md) — 测试体系、覆盖率与基准
+- [docs/testing.md](docs/testing.md) — 测试体系、覆盖率与全部结果
+- [docs/benchmarks.md](docs/benchmarks.md) — 性能专题：criterion 与实战程序耗时
 
 ## Development
 
