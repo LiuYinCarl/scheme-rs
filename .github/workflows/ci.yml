@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Integration tests spawn the scheme-rs binary as a subprocess to run
+      # the three Scheme suites (tests/scm/*); this works on Linux CI too
+      # since CARGO_BIN_EXE_scheme-rs points at the just-built binary.
+      - name: test
+        run: cargo test
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Current measured line coverage (local, 2026-08): 75.17% lines
+      # (3918 lines total). The --fail-under-lines threshold of 70 is set
+      # ~5 points below that measurement.
+      - name: coverage (lcov + summary)
+        run: |
+          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+          cargo llvm-cov --all-features --workspace --summary-only
+          cargo llvm-cov --all-features --workspace --fail-under-lines 70 --summary-only
+
+      - name: coverage (html report)
+        run: cargo llvm-cov report --all-features --workspace --html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: target/llvm-cov/html
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 14
+
+  bench:
+    name: bench (record only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Recording only: no regression gating on benchmark numbers.
+      - name: cargo bench
+        run: |
+          cargo bench --bench interpreter -- --warm-up-time 1 --measurement-time 3 --sample-size 10 2>&1 | tee bench-output.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-output
+          path: bench-output.txt
+          retention-days: 14
