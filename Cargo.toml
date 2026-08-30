@@ -1,0 +1,20 @@
+[package]
+name = "scheme-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+rustyline = "14"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "interpreter"
+harness = false
+
+[profile.dev]
+opt-level = 1
