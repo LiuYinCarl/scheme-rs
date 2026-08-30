@@ -16,6 +16,17 @@ cargo run                        # REPL
 cargo test                       # unit + integration tests (must be green)
 ```
 
+## Documentation
+
+中文设计文档（面向想学习解释器设计的读者）：
+
+- [docs/architecture.md](docs/architecture.md) — 总体架构：trampoline
+  求值器、persistent 续延栈、call/cc、dynamic-wind、location 环境
+- [docs/syntax-rules.md](docs/syntax-rules.md) — 宏系统与重命名式卫生
+- [docs/numeric-tower.md](docs/numeric-tower.md) — 数字塔与精确性规则
+- [docs/r5rs-compliance.md](docs/r5rs-compliance.md) — R5RS 符合性清单与有意偏差
+- [docs/testing.md](docs/testing.md) — 测试体系、覆盖率与基准
+
 ## Development
 
 ```
