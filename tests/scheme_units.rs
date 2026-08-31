@@ -569,6 +569,7 @@ fn ext_random() {
 
 #[test]
 fn ext_files() {
+    std::fs::create_dir_all("target/tmp").unwrap();
     assert_eq!(one("(file-exists? \"Cargo.toml\")"), "#t");
     assert_eq!(one("(file-exists? \"no-such-file-xyz-123\")"), "#f");
     assert_eq!(one("(string? (current-directory))"), "#t");
@@ -739,6 +740,7 @@ fn exact_prefix_on_inf_nan_rejected() {
 fn load_unbalanced_parens_errors() {
     // 括号不平衡的文件必须报错，而不是静默丢弃末尾 datum。
     // 用进程号保证文件名唯一（测试并行），写在 target/tmp/ 下。
+    std::fs::create_dir_all("target/tmp").unwrap();
     let path = format!("target/tmp/load_unbalanced_{}.scm", std::process::id());
     let src = format!(
         "(begin (with-output-to-file \"{}\" (lambda () (display \"(define x (list 1 2)\"))) (load \"{}\"))",
@@ -840,6 +842,7 @@ fn var_macro_namespaces_last_definer_wins() {
 fn with_ports_dynamic_wind_normal_escape_reentry() {
     // 端口切换挂在 dynamic-wind 上：正常返回/call/cc 逃逸/重入都要以
     // 正确时机恢复端口；after 里 close（含 flush），写文件不丢数据。
+    std::fs::create_dir_all("target/tmp").unwrap();
     let out_a = format!("target/tmp/withdw-a-{}.txt", std::process::id());
     let out_b = format!("target/tmp/withdw-b-{}.txt", std::process::id());
     let out_c = format!("target/tmp/withdw-c-{}.txt", std::process::id());
