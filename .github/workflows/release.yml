@@ -1,0 +1,95 @@
+name: Release
+
+# 推送形如 v0.2.0 的 tag 触发：构建各平台 release 二进制，
+# 与标准库（src/libs/*.scm，即 require 可加载的扩展模块）打包，
+# 汇总为一个 GitHub Release。
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - name: aarch64-apple-darwin
+            os: macos-latest
+          - name: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # tag 必须与 Cargo.toml 的 version 一致，防止发错版本
+      - name: check tag matches Cargo.toml version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match Cargo.toml version $pkg" >&2
+            exit 1
+          fi
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      # 包布局：scheme-rs[-<target>]/ 下是可执行程序 + lib/ 标准库
+      - name: package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          pkg="scheme-rs-${{ matrix.name }}"
+          mkdir -p "$pkg/lib"
+          cp "target/release/scheme-rs" "$pkg/"
+          cp src/libs/*.scm "$pkg/lib/"
+          tar -czf "$pkg.tar.gz" "$pkg"
+
+      - name: package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pkg = "scheme-rs-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path "$pkg/lib" | Out-Null
+          Copy-Item "target/release/scheme-rs.exe" "$pkg/"
+          Copy-Item "src/libs/*.scm" "$pkg/lib/"
+          Compress-Archive -Path "$pkg" -DestinationPath "$pkg.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.name }}
+          path: |
+            scheme-rs-*.tar.gz
+            scheme-rs-*.zip
+          retention-days: 7
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/scheme-rs-*
+          generate_release_notes: true
