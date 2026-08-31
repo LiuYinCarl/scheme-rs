@@ -273,13 +273,70 @@ pub fn standard_env() -> Rc<Env> {
 // ---------------------------------------------------------------------------
 // Argument helpers
 
-/// 扩展模块库（纯 Scheme，include_str! 内嵌）：
-/// 用户 `(require '名字)` 主动加载，不加载就不占用全局环境里的名字，
-/// 避免与用户自定义函数冲突。见 docs/extensions.md。
-const MODULES: &[(&str, &str)] = &[
-    ("list", include_str!("libs/list.scm")),
-    ("string", include_str!("libs/string.scm")),
-];
+// 扩展模块库（纯 Scheme，src/libs/*.scm，磁盘加载，不内嵌）：
+// 用户 `(require '名字)` 主动加载，不加载就不占用全局环境里的名字，
+// 避免与用户自定义函数冲突。修改 lib 下的 .scm 文件直接生效，无需
+// 重新编译。见 docs/extensions.md。
+
+/// 标准库搜索目录，按优先级：
+/// 1. 可执行文件旁的 lib/（release 包布局：scheme-rs 与 lib/ 同级）
+/// 2. 当前目录的 lib/
+/// 3. 当前目录的 src/libs/（仓库内 cargo run / cargo test 的开发布局）
+fn module_search_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            dirs.push(d.join("lib"));
+        }
+    }
+    dirs.push(std::path::PathBuf::from("lib"));
+    dirs.push(std::path::PathBuf::from("src/libs"));
+    dirs
+}
+
+/// 在搜索路径里找 <名字>.scm 并读入；找不到时报错并列出可用模块。
+fn load_module(module: &str) -> Result<String, String> {
+    let file = format!("{}.scm", module);
+    for dir in module_search_dirs() {
+        let p = dir.join(&file);
+        if p.is_file() {
+            return std::fs::read_to_string(&p)
+                .map_err(|e| format!("require: {}: {}", p.display(), e));
+        }
+    }
+    let mut available: Vec<String> = Vec::new();
+    for dir in module_search_dirs() {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("scm") {
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        available.push(stem.to_string());
+                    }
+                }
+            }
+        }
+    }
+    available.sort();
+    available.dedup();
+    if available.is_empty() {
+        let searched: Vec<String> = module_search_dirs()
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        Err(format!(
+            "require: unknown module: {} (未找到标准库目录，搜索过: {})",
+            module,
+            searched.join(", ")
+        ))
+    } else {
+        Err(format!(
+            "require: unknown module: {} (可用: {})",
+            module,
+            available.join(" ")
+        ))
+    }
+}
 
 fn arity(name: &str, args: &[Value], n: usize) -> Result<(), String> {
     if args.len() != n {
@@ -1407,7 +1464,7 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             p.write_str(&crate::printer::pretty_to_string(&args[0]))?;
             ret(Value::Unspecified)
         }
-        // (require '名字)：加载内嵌扩展模块到全局环境（见 docs/extensions.md）
+        // (require '名字)：从磁盘加载扩展模块到全局环境（见 docs/extensions.md）
         "require" => {
             arity(name, &args, 1)?;
             let module = match &args[0] {
@@ -1419,21 +1476,18 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
                     ))
                 }
             };
-            let src = match MODULES.iter().find(|(n, _)| *n == module) {
-                Some((_, src)) => src,
-                None => {
-                    let available: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
-                    return Err(format!(
-                        "require: unknown module: {} (可用: {})",
-                        module,
-                        available.join(" ")
-                    ));
-                }
-            };
-            let mut forms = reader::read_all_strict(src).map_err(|e| match e {
+            // 模块名会拼成文件路径，拒绝路径穿越
+            if module.contains('/') || module.contains('\\') || module.contains("..") {
+                return Err(format!("require: invalid module name: {}", module));
+            }
+            let src = load_module(&module)?;
+            let mut forms = reader::read_all_strict(&src).map_err(|e| match e {
                 reader::ReadError::Eof => format!("require: {}: unexpected eof", module),
                 reader::ReadError::Msg(m) => format!("require: {}: {}", module, m),
             })?;
+            if forms.is_empty() {
+                return ret(Value::Unspecified);
+            }
             let env = global_env();
             let first = forms.remove(0);
             m.push(ContKind::Load {
