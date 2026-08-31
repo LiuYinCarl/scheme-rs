@@ -15,7 +15,7 @@ re-entry — without using native Rust recursion for evaluation.
 | SISC R5RS pitfalls（`tests/scm/r5rs_pitfall.scm`） | **22/22**（letrec+call/cc、多射续延、卫生宏、TCO 等最刁钻用例） |
 | R5RS 报告示例提取套件（`tests/scm/r5rs-examples.scm`） | **253/253** |
 | 真实程序（`tests/scm/programs/`：11 个 Gabriel 基准 + SICP mceval/amb/regmach + Schelog） | **15/15 全过**，含 nboyer 精确命中 **95024 rewrites**、SICP 第 5 章编译器、Prolog 嵌入 |
-| Rust 单元 + 集成测试 | **50 个**（28 单元 + 3 REPL + 19 集成；统一入口 `scripts/test.sh`） |
+| Rust 单元 + 集成测试 | **56 个**（34 单元 + 3 REPL + 19 集成；统一入口 `scripts/test.sh`） |
 | 行覆盖率（cargo-llvm-cov） | **75.17%**（CI 门禁 70） |
 | CI | fmt / clippy / test（**Ubuntu + macOS**）/ coverage / bench 全绿 |
 
@@ -39,7 +39,7 @@ re-entry — without using native Rust recursion for evaluation.
 ```
 cargo build
 cargo run -- path/to/file.scm   # run a file
-cargo run                        # REPL
+cargo run                        # REPL（语法高亮默认开启，--no-highlight 关闭）
 cargo test                       # unit + integration tests (must be green)
 ```
 
@@ -47,11 +47,13 @@ cargo test                       # unit + integration tests (must be green)
 
 中文设计文档（面向想学习解释器设计的读者）：
 
+- [docs/guide.md](docs/guide.md) — 使用指南：全部可用函数与示例
 - [docs/architecture.md](docs/architecture.md) — 总体架构：trampoline
   求值器、persistent 续延栈、call/cc、dynamic-wind、location 环境
 - [docs/syntax-rules.md](docs/syntax-rules.md) — 宏系统与重命名式卫生
 - [docs/numeric-tower.md](docs/numeric-tower.md) — 数字塔与精确性规则
 - [docs/r5rs-compliance.md](docs/r5rs-compliance.md) — R5RS 符合性清单与有意偏差
+- [docs/extensions.md](docs/extensions.md) — R5RS 之外的扩展（random/runtime/trace/pretty-print/prelude 等）
 - [docs/testing.md](docs/testing.md) — 测试体系、覆盖率与全部结果
 - [docs/benchmarks.md](docs/benchmarks.md) — 性能专题：criterion 与实战程序耗时
 
@@ -68,7 +70,8 @@ cargo bench --bench interpreter              # criterion benchmarks
 
 The REPL is Jupyter-styled (`src/repl.rs`): `In [n]:` / `Out[n]:` numbered
 prompts, continuation lines (`....:`) while a datum is unbalanced, ANSI
-colors (auto-disabled when not a TTY), Tab completion from the live global
+colors (auto-disabled when not a TTY), syntax highlighting
+(`--no-highlight` to disable), Tab completion from the live global
 environment plus special forms, persistent history
 (`$XDG_DATA_HOME/scheme-rs/history` or `~/.scheme-rs_history`), Ctrl-C to
 discard the current input, `(exit)` or Ctrl-D to quit.

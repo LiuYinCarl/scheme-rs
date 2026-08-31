@@ -20,7 +20,7 @@
 //! 被多次、交错地重入（pitfall 7.1–7.4 依赖这一点）。
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use crate::env::{aux_name, lookup_var, resolve, Env, Meaning};
@@ -202,6 +202,10 @@ pub enum ContKind {
     GetOutputString {
         port: Rc<crate::port::Port>,
     },
+    /// trace 用的透传帧：被跟踪过程返回时打印结果（缩进即调用深度）。
+    TraceReturn {
+        depth: usize,
+    },
 }
 
 pub enum State {
@@ -351,6 +355,11 @@ fn resume(m: &mut Machine, kind: &ContKind, v: Value) -> Result<State, String> {
             }
             None => Err(format!("set!: {}", crate::value::unbound_msg(*name))),
         },
+        ContKind::TraceReturn { depth } => {
+            // 被跟踪过程返回：打印结果后原样透传给下一帧
+            println!("{}{}", "| ".repeat(*depth), write_to_string(&v));
+            Ok(State::Return(v))
+        }
         ContKind::OpDone { operands, env } => {
             let proc = v;
             if operands.is_empty() {
@@ -590,9 +599,78 @@ fn advance_map(
 }
 
 // ---------------------------------------------------------------------------
+// Trace support（扩展功能，见 docs/extensions.md）
+
+thread_local! {
+    /// 被跟踪的过程：key 为过程的稳定标识，value 为展示名。
+    static TRACED: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
+}
+
+/// 过程的稳定标识：闭包用 Rc 指针，内建过程用名字的 'static 字符串指针。
+fn trace_key(proc: &Value) -> Option<usize> {
+    match proc {
+        Value::Closure(c) => Some(Rc::as_ptr(c) as usize),
+        Value::Primitive(name) => Some(name.as_ptr() as usize),
+        _ => None,
+    }
+}
+
+/// 注册跟踪一个过程（闭包或内建过程）。
+pub fn trace_add(proc: &Value, label: String) -> Result<(), String> {
+    match trace_key(proc) {
+        Some(k) => {
+            TRACED.with(|t| t.borrow_mut().insert(k, label));
+            Ok(())
+        }
+        None => Err(format!("trace: not a procedure: {}", write_to_string(proc))),
+    }
+}
+
+/// 取消对一个过程的跟踪；返回是否之前在跟踪。
+pub fn trace_remove(proc: &Value) -> bool {
+    match trace_key(proc) {
+        Some(k) => TRACED.with(|t| t.borrow_mut().remove(&k).is_some()),
+        None => false,
+    }
+}
+
+pub fn trace_clear() {
+    TRACED.with(|t| t.borrow_mut().clear());
+}
+
+fn trace_label_of(proc: &Value) -> Option<String> {
+    let k = trace_key(proc)?;
+    TRACED.with(|t| t.borrow().get(&k).cloned())
+}
+
+/// 当前续延栈上的 TraceReturn 帧数 = 被跟踪调用的嵌套深度。
+fn trace_depth(cont: &Cont) -> usize {
+    let mut n = 0;
+    let mut cur = cont;
+    while let Some(f) = cur {
+        if matches!(f.kind, ContKind::TraceReturn { .. }) {
+            n += 1;
+        }
+        cur = &f.parent;
+    }
+    n
+}
+
+// ---------------------------------------------------------------------------
 // Procedure application
 
 pub fn apply(m: &mut Machine, proc: Value, args: Vec<Value>) -> Result<State, String> {
+    if let Some(label) = trace_label_of(&proc) {
+        let depth = trace_depth(&m.cont);
+        let mut line = format!("{}({}", "| ".repeat(depth), label);
+        for a in &args {
+            line.push(' ');
+            line.push_str(&write_to_string(a));
+        }
+        line.push(')');
+        println!("{}", line);
+        m.push(ContKind::TraceReturn { depth });
+    }
     match &proc {
         Value::Primitive(name) => crate::builtins::dispatch(m, name, args),
         Value::Closure(c) => {

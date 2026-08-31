@@ -29,6 +29,13 @@
   `open-input-string open-output-string get-output-string
   call-with-output-string flush-output error`。
 
+## R5RS 之外的扩展
+
+`runtime current-milliseconds random random-seed cd current-directory
+file-exists? delete-file pretty-print trace untrace` 与 prelude
+（SRFI-1 子集）等扩展全部为新增名字，见
+[extensions.md](extensions.md)。
+
 ## 有意的偏差与省略
 
 | 项 | 说明 |

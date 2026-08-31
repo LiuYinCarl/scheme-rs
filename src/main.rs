@@ -9,13 +9,31 @@ use scheme_rs::reader;
 use scheme_rs::repl;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let mut highlight = true;
+    let mut file: Option<String> = None;
+    for a in std::env::args().skip(1) {
+        match a.as_str() {
+            "--no-highlight" => highlight = false,
+            "-h" | "--help" => {
+                println!("Usage: scheme-rs [--no-highlight] [file.scm]");
+                println!("  --no-highlight  关闭 REPL 语法高亮（默认开启）");
+                println!("  file.scm        执行文件；缺省进入 REPL");
+                return ExitCode::SUCCESS;
+            }
+            _ if file.is_none() => file = Some(a),
+            other => {
+                eprintln!("scheme-rs: unknown argument: {}", other);
+                return ExitCode::from(2);
+            }
+        }
+    }
     let env = builtins::standard_env();
-    if args.len() >= 2 {
-        run_file(&args[1], &env)
-    } else {
-        repl::run(&env);
-        ExitCode::SUCCESS
+    match file {
+        Some(f) => run_file(&f, &env),
+        None => {
+            repl::run(&env, highlight);
+            ExitCode::SUCCESS
+        }
     }
 }
 

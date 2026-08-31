@@ -1,12 +1,15 @@
 //! Jupyter 风格的交互式 REPL。
 //!
 //! 特性：`In [n]:` / `Out[n]:` 计数提示符、括号未配平时的续行模式、
-//! ANSI 颜色（非 TTY 自动关闭）、rustyline 提供的 Tab 补全（内建过程 +
-//! 全局环境中用户 define 的符号 + 特殊形式，动态读取）、历史记录持久化、
-//! Ctrl-C 丢弃当前输入不退出、Ctrl-D / `(exit)` 退出。
+//! ANSI 颜色（非 TTY 自动关闭）、语法高亮（注释/字符串/数字/特殊形式/
+//! 已绑定符号，默认开启，`--no-highlight` 关闭）、rustyline 提供的
+//! Tab 补全（内建过程 + 全局环境中用户 define 的符号 + 特殊形式，动态
+//! 读取）、历史记录持久化、Ctrl-C 丢弃当前输入不退出、Ctrl-D / `(exit)`
+//! 退出。
 //!
 //! 文件执行模式不走这里（见 main.rs）。
 
+use std::borrow::Cow;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -18,11 +21,12 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Helper};
 
-use crate::env::{is_keyword, Env};
+use crate::env::{is_keyword, lookup_var, Env};
 use crate::eval;
+use crate::number;
 use crate::printer::write_to_string;
 use crate::reader::{self, ReadError};
-use crate::value::{sym_str, Sym, Value};
+use crate::value::{intern, list_to_vec, sym_str, Sym, Value};
 
 // ---------------------------------------------------------------------------
 // 纯逻辑部分（可单元测试）
@@ -53,6 +57,32 @@ fn is_exit_form(v: &Value) -> bool {
     } else {
         false
     }
+}
+
+/// 识别顶层 `(load "path")` 形式，返回其中的路径字符串。
+fn load_path_of(v: &Value) -> Option<String> {
+    let (items, tail) = list_to_vec(v)?;
+    if items.len() == 2 && tail.is_nil() {
+        if let (Value::Symbol(s), Value::Str(path)) = (&items[0], &items[1]) {
+            if sym_str(*s) == "load" {
+                return Some(path.borrow().clone());
+            }
+        }
+    }
+    None
+}
+
+/// 识别顶层 `(time expr)` 形式，返回待计时的内部表达式。
+fn time_form_of(v: &Value) -> Option<Value> {
+    let (items, tail) = list_to_vec(v)?;
+    if items.len() == 2 && tail.is_nil() {
+        if let Value::Symbol(s) = &items[0] {
+            if sym_str(*s) == "time" {
+                return Some(items[1].clone());
+            }
+        }
+    }
+    None
 }
 
 /// 补全词表：全局环境里的变量与宏（过滤掉宏展开产生的重命名符号，
@@ -157,10 +187,102 @@ impl Colors {
 }
 
 // ---------------------------------------------------------------------------
+// 语法高亮（仅交互模式；可用 --no-highlight 关闭）
+//
+// 逐字符扫描输入行并插入 ANSI 颜色。词法刻意与 reader 解耦：高亮只是
+// 视觉提示，即使个别 token 判错也不影响求值。
+
+const HL_RESET: &str = "\x1b[0m";
+
+fn hl_paint(out: &mut String, code: &str, s: &str) {
+    out.push_str("\x1b[");
+    out.push_str(code);
+    out.push('m');
+    out.push_str(s);
+    out.push_str(HL_RESET);
+}
+
+/// 高亮一行源码。配色：注释/括号 灰、字符串 绿、数字/布尔/字符 黄、
+/// 特殊形式 品红、已绑定符号 青、quote 系列 品红。
+fn highlight_line(line: &str, env: &Rc<Env>) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            ';' => {
+                hl_paint(&mut out, "90", &chars[i..].iter().collect::<String>());
+                break;
+            }
+            '"' => {
+                let start = i;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1; // 跳过转义字符
+                    }
+                    i += 1;
+                }
+                if i < chars.len() {
+                    i += 1; // 收尾引号
+                }
+                hl_paint(&mut out, "32", &chars[start..i].iter().collect::<String>());
+            }
+            '(' | ')' => {
+                hl_paint(&mut out, "90", &c.to_string());
+                i += 1;
+            }
+            '\'' | '`' | ',' => {
+                hl_paint(&mut out, "35", &c.to_string());
+                i += 1;
+            }
+            c if c.is_whitespace() => {
+                out.push(c);
+                i += 1;
+            }
+            _ => {
+                let start = i;
+                while i < chars.len()
+                    && !chars[i].is_whitespace()
+                    && !matches!(chars[i], '(' | ')' | ';' | '"' | '\'' | '`' | ',')
+                {
+                    i += 1;
+                }
+                let tok: String = chars[start..i].iter().collect();
+                highlight_token(&mut out, &tok, env);
+            }
+        }
+    }
+    out
+}
+
+fn highlight_token(out: &mut String, tok: &str, env: &Rc<Env>) {
+    if number::parse_number(tok).is_some() || tok.starts_with("#t") || tok.starts_with("#f") {
+        hl_paint(out, "33", tok); // 数字、布尔
+        return;
+    }
+    if tok.starts_with("#\\") {
+        hl_paint(out, "33", tok); // 字符字面量
+        return;
+    }
+    // reader 会把标识符折叠为小写，查环境前保持一致
+    let sym = intern(&tok.to_lowercase());
+    if is_keyword(sym) || env.macros.borrow().contains_key(&sym) {
+        hl_paint(out, "35", tok); // 特殊形式/宏
+    } else if lookup_var(env, sym).is_some() {
+        hl_paint(out, "36", tok); // 已绑定符号（内建过程/用户定义）
+    } else {
+        out.push_str(tok);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // rustyline 补全器
 
 struct SchemeHelper {
     env: Rc<Env>,
+    highlight: bool,
 }
 
 impl Completer for SchemeHelper {
@@ -192,7 +314,18 @@ impl Completer for SchemeHelper {
 impl Hinter for SchemeHelper {
     type Hint = String;
 }
-impl Highlighter for SchemeHelper {}
+impl Highlighter for SchemeHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        if self.highlight {
+            Cow::Owned(highlight_line(line, &self.env))
+        } else {
+            Cow::Borrowed(line)
+        }
+    }
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        self.highlight
+    }
+}
 impl Validator for SchemeHelper {}
 impl Helper for SchemeHelper {}
 
@@ -210,6 +343,21 @@ fn history_file() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 // 求值与打印
 
+/// 兜底：解释器内部的任何 panic 都降级为普通错误，REPL 不退出。
+/// panic hook（见 run）会在 stderr 留下位置信息，便于报告 bug。
+fn catch_internal<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| {
+        let msg = if let Some(s) = p.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = p.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".into()
+        };
+        format!("internal error (this is a bug, please report): {}", msg)
+    })
+}
+
 /// 求值一个完整输入里的全部 datum；返回最后一个非 unspecified 的结果。
 /// 出错时打印（红色）并中止本单元剩余 datum，与 Jupyter 单元行为一致。
 fn eval_forms(forms: &[Value], env: &Rc<Env>, colors: Colors, n: usize) {
@@ -219,13 +367,26 @@ fn eval_forms(forms: &[Value], env: &Rc<Env>, colors: Colors, n: usize) {
     }
     let mut last: Option<Value> = None;
     for f in forms {
-        match eval::eval_program(vec![f.clone()], env) {
-            Ok(v) => {
+        // REPL 层的 (time expr)：只包裹顶层表达式计时，不是求值器的特殊形式
+        let (target, timing) = match time_form_of(f) {
+            Some(inner) => (inner, true),
+            None => (f.clone(), false),
+        };
+        let t0 = std::time::Instant::now();
+        match catch_internal(|| eval::eval_program(vec![target], env)) {
+            Ok(Ok(v)) => {
+                if timing {
+                    println!("; time: {:.3} ms", t0.elapsed().as_secs_f64() * 1000.0);
+                }
+                // 顶层 load 成功时打印确认；脚本内嵌套 load 不受影响
+                if let Some(path) = load_path_of(f) {
+                    println!("; loaded {}", path);
+                }
                 if !matches!(v, Value::Unspecified) {
                     last = Some(v);
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) | Err(e) => {
                 println!("{}", colors.error(&format!("Error: {}", e)));
                 return;
             }
@@ -247,19 +408,32 @@ fn print_banner() {
 // ---------------------------------------------------------------------------
 // 主入口
 
-pub fn run(env: &Rc<Env>) {
+pub fn run(env: &Rc<Env>, highlight: bool) {
+    // panic 会被 catch_internal 降级为普通错误；hook 只留一行位置信息，
+    // 替换默认的 "thread 'main' panicked" 长输出（看起来像崩溃）
+    std::panic::set_hook(Box::new(|info| {
+        if let Some(loc) = info.location() {
+            eprintln!(
+                "note: internal panic at {} (this is a bug, please report)",
+                loc
+            );
+        }
+    }));
     if std::io::stdin().is_terminal() {
-        run_interactive(env);
+        run_interactive(env, highlight);
     } else {
         // 管道/重定向：无颜色、无行编辑，逐行读取
         run_plain(env);
     }
 }
 
-fn run_interactive(env: &Rc<Env>) {
+fn run_interactive(env: &Rc<Env>, highlight: bool) {
     let colors = Colors(true);
     print_banner();
-    let helper = SchemeHelper { env: env.clone() };
+    let helper = SchemeHelper {
+        env: env.clone(),
+        highlight,
+    };
     let mut rl = match Editor::new() {
         Ok(mut e) => {
             e.set_helper(Some(helper));
@@ -292,7 +466,11 @@ fn run_interactive(env: &Rc<Env>) {
                 let _ = rl.add_history_entry(line.as_str());
                 buffer.push_str(&line);
                 buffer.push('\n');
-                match check_input(&buffer) {
+                let status = match catch_internal(|| check_input(&buffer)) {
+                    Ok(s) => s,
+                    Err(e) => InputStatus::Error(e),
+                };
+                match status {
                     InputStatus::Incomplete => cont = true,
                     InputStatus::Error(m) => {
                         println!("{}", colors.error(&format!("Read error: {}", m)));
@@ -348,7 +526,11 @@ fn run_plain(env: &Rc<Env>) {
             }
             Ok(_) => {
                 buffer.push_str(&line);
-                match check_input(&buffer) {
+                let status = match catch_internal(|| check_input(&buffer)) {
+                    Ok(s) => s,
+                    Err(e) => InputStatus::Error(e),
+                };
+                match status {
                     InputStatus::Incomplete => {}
                     InputStatus::Error(m) => {
                         println!("{}", colors.error(&format!("Read error: {}", m)));
@@ -415,5 +597,52 @@ mod tests {
         assert_eq!(token_start("(map car", 8), 5);
         assert_eq!(token_start("ca", 2), 0);
         assert_eq!(token_start("(quote ab", 9), 7);
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut it = s.chars();
+        while let Some(c) = it.next() {
+            if c == '\x1b' {
+                for c2 in it.by_ref() {
+                    if c2 == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn highlight_line_colors() {
+        let env = standard_env();
+        crate::eval::eval_str("(define my-var 1)", &env).unwrap();
+        let s = highlight_line("(define my-var \"s\" 42 #t #\\a) ; tail", &env);
+        assert!(s.contains("\x1b[90m(\x1b[0m")); // 括号灰
+        assert!(s.contains("\x1b[35mdefine\x1b[0m")); // 特殊形式品红
+        assert!(s.contains("\x1b[36mmy-var\x1b[0m")); // 已绑定符号青
+        assert!(s.contains("\x1b[32m\"s\"\x1b[0m")); // 字符串绿
+        assert!(s.contains("\x1b[33m42\x1b[0m")); // 数字黄
+        assert!(s.contains("\x1b[33m#t\x1b[0m")); // 布尔黄
+        assert!(s.contains("\x1b[33m#\\a\x1b[0m")); // 字符黄
+        assert!(s.contains("\x1b[90m; tail\x1b[0m")); // 注释灰
+    }
+
+    #[test]
+    fn highlight_line_is_lossless() {
+        // 去掉 ANSI 序列后必须还原原文（高亮不破坏内容）
+        let env = standard_env();
+        for line in [
+            "(+ 1 2) (car '(a . b))",
+            "(define (f x) ; mid\n  (f (- x 1)))",
+            "\"unclosed string",
+            "（全角 eqv? 1.0)",
+            "",
+        ] {
+            assert_eq!(strip_ansi(&highlight_line(line, &env)), line);
+        }
     }
 }

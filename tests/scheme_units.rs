@@ -4,7 +4,7 @@
 use scheme_rs::builtins::standard_env;
 use scheme_rs::env::Env;
 use scheme_rs::eval::eval_str;
-use scheme_rs::printer::write_to_string;
+use scheme_rs::printer::{display_to_string, write_to_string};
 use scheme_rs::value::Value;
 use std::rc::Rc;
 
@@ -58,6 +58,13 @@ fn reader_abbreviations_and_comments() {
 
 // ---------------------------------------------------------------------------
 // Numbers
+
+/// 全角括号等多字节字符开头的 token 按 symbol 处理；
+/// 数字解析的路径不得按字节切片导致 panic（历史 bug）。
+#[test]
+fn reader_multibyte_token_no_panic() {
+    assert_eq!(one("'（x）"), "（x）");
+}
 
 #[test]
 fn numbers_exact() {
@@ -537,4 +544,91 @@ fn syntax_rules_ellipsis_unrelated_lengths() {
              (m2 (a) ((x 1) (y 2)) ((x 3) (y 4)))"),
         "((a) (x 1) (x 3))"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Extensions（非 R5RS，见 docs/extensions.md）
+
+#[test]
+fn ext_runtime_and_clock() {
+    assert_eq!(one("(>= (runtime) 0)"), "#t");
+    assert_eq!(one("(integer? (current-milliseconds))"), "#t");
+}
+
+#[test]
+fn ext_random() {
+    // random-seed 可复现（RNG 状态是 thread_local，跨 standard_env 保持）
+    let a = one("(begin (random-seed 42) (random 1000000))");
+    let b = one("(begin (random-seed 42) (random 1000000))");
+    assert_eq!(a, b);
+    assert_eq!(one("(begin (random-seed 1) (< -1 (random 10) 10))"), "#t");
+    assert_eq!(one("(begin (random-seed 1) (<= 0 (random) 1))"), "#t");
+    assert!(one("(random 0)").starts_with("ERROR"));
+    assert!(one("(random 'x)").starts_with("ERROR"));
+}
+
+#[test]
+fn ext_files() {
+    assert_eq!(one("(file-exists? \"Cargo.toml\")"), "#t");
+    assert_eq!(one("(file-exists? \"no-such-file-xyz-123\")"), "#f");
+    assert_eq!(one("(string? (current-directory))"), "#t");
+    let r = run(&[
+        "(with-output-to-file \"target/tmp/ext-delete-me.scm\" (lambda () (display \"x\")))",
+        "(file-exists? \"target/tmp/ext-delete-me.scm\")",
+        "(delete-file \"target/tmp/ext-delete-me.scm\")",
+        "(file-exists? \"target/tmp/ext-delete-me.scm\")",
+    ]);
+    assert_eq!(r[1], "#t");
+    assert_eq!(r[3], "#f");
+}
+
+#[test]
+fn ext_prelude_srfi1() {
+    assert_eq!(one("(iota 5)"), "(0 1 2 3 4)");
+    assert_eq!(one("(iota 3 10 2)"), "(10 12 14)");
+    assert_eq!(one("(filter odd? '(1 2 3 4 5))"), "(1 3 5)");
+    assert_eq!(one("(fold + 0 '(1 2 3 4))"), "10");
+    assert_eq!(one("(fold cons '() '(1 2 3))"), "(3 2 1)");
+    assert_eq!(one("(fold-right cons '() '(1 2 3))"), "(1 2 3)");
+    assert_eq!(one("(last '(a b c))"), "c");
+    assert_eq!(one("(take '(1 2 3 4) 2)"), "(1 2)");
+    assert_eq!(one("(drop '(1 2 3 4) 2)"), "(3 4)");
+    assert_eq!(one("(delete-duplicates '(1 2 1 3 2))"), "(1 3 2)");
+}
+
+#[test]
+fn ext_trace_untrace() {
+    let r = run(&[
+        "(define (ext-f x) (if (= x 0) 0 (+ 1 (ext-f (- x 1)))))",
+        "(trace 'ext-f)",
+        "(ext-f 3)",
+        "(untrace 'ext-f)",
+        "(ext-f 1)",
+    ]);
+    assert_eq!(r[2], "3");
+    assert_eq!(r[4], "1");
+    // trace 未定义符号报错
+    assert!(one("(trace 'no-such-var-xyz)").starts_with("ERROR"));
+    // trace 非过程报错
+    assert!(one("(trace 42)").starts_with("ERROR"));
+    // untrace 无参清空全部
+    assert_eq!(one("(begin (trace car) (untrace) 'ok)"), "ok");
+}
+
+#[test]
+fn ext_pretty_print() {
+    // 短列表平铺
+    assert_eq!(
+        one("(call-with-output-string (lambda (p) (pretty-print '(1 2 3) p)))"),
+        "\"(1 2 3)\""
+    );
+    // 超长结构换行展开
+    let env = standard_env();
+    let v = eval_in(
+        &env,
+        "(call-with-output-string (lambda (p) (pretty-print '(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) p)))",
+    )
+    .unwrap();
+    let s = display_to_string(&v);
+    assert!(s.contains('\n'), "expected multiline output, got: {}", s);
 }

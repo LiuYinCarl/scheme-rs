@@ -654,7 +654,12 @@ fn parse_real_body(s: &str, radix: u32) -> Option<Value> {
     let has_point = s.contains('.');
     let has_exp = radix == 10 && {
         let t = s.trim_start_matches(['+', '-']);
-        t.len() > 1 && (t[1..].contains('e') || t[1..].contains('E'))
+        // 按字符跳过首字符（符号或数字），不能按字节切：token 可能以
+        // 全角字符等多字节 UTF-8 开头（如误输入的 "（eqv?"）
+        let mut it = t.chars();
+        it.next();
+        let rest = it.as_str();
+        !rest.is_empty() && (rest.contains('e') || rest.contains('E'))
     };
     if !has_point && !has_exp {
         return BigInt::parse_bytes(s.as_bytes(), radix).map(Value::Int);

@@ -215,3 +215,116 @@ fn fmt_pair(
     }
     out.push(')');
 }
+
+// ---------------------------------------------------------------------------
+// pretty-print
+//
+// 先尝试整项平铺；超过宽度则换行缩进，每个元素独占一行。环检测规则与
+// fmt_value 相同（cdr 链上的节点在整条链打印完之前留在 seen 里）。
+
+/// 每行允许的最大列宽（含当前缩进）。
+const PRETTY_WIDTH: usize = 60;
+
+pub fn pretty_to_string(v: &Value) -> String {
+    let mut s = String::new();
+    let mut seen = HashSet::new();
+    fmt_pretty(v, true, 0, &mut s, &mut seen);
+    s
+}
+
+fn newline_indent(out: &mut String, indent: usize) {
+    out.push('\n');
+    for _ in 0..indent {
+        out.push(' ');
+    }
+}
+
+fn fmt_pretty(v: &Value, write: bool, indent: usize, out: &mut String, seen: &mut HashSet<usize>) {
+    match v {
+        Value::Pair(_) | Value::Vector(_) => {
+            // 平铺能放下就直接平铺（用独立 seen，不影响外层的环检测状态）
+            let mut flat = String::new();
+            let mut flat_seen = HashSet::new();
+            fmt_value(v, write, &mut flat, &mut flat_seen);
+            if indent + flat.len() <= PRETTY_WIDTH {
+                out.push_str(&flat);
+                return;
+            }
+        }
+        _ => {
+            fmt_value(v, write, out, seen);
+            return;
+        }
+    }
+    // 放不下，换行展开
+    match v {
+        Value::Pair(p) => fmt_pair_pretty(p, write, indent, out, seen),
+        Value::Vector(items) => {
+            let ptr = Rc::as_ptr(items) as usize;
+            if !seen.insert(ptr) {
+                out.push_str("#<cycle>");
+                return;
+            }
+            out.push_str("#(");
+            let mut first = true;
+            for x in items.borrow().iter() {
+                if first {
+                    first = false;
+                } else {
+                    newline_indent(out, indent + 2);
+                }
+                fmt_pretty(x, write, indent + 2, out, seen);
+            }
+            out.push(')');
+            seen.remove(&ptr);
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn fmt_pair_pretty(
+    p: &Rc<std::cell::RefCell<crate::value::Pair>>,
+    write: bool,
+    indent: usize,
+    out: &mut String,
+    seen: &mut HashSet<usize>,
+) {
+    out.push('(');
+    let mut first = true;
+    let mut cur = Value::Pair(p.clone());
+    let mut chain: Vec<usize> = Vec::new();
+    loop {
+        match cur {
+            Value::Pair(pp) => {
+                if first {
+                    first = false;
+                } else {
+                    newline_indent(out, indent + 1);
+                }
+                let ptr = Rc::as_ptr(&pp) as usize;
+                if !seen.insert(ptr) {
+                    out.push_str(". #<cycle>");
+                    break;
+                }
+                chain.push(ptr);
+                let (a, d) = {
+                    let b = pp.borrow();
+                    (b.0.clone(), b.1.clone())
+                };
+                fmt_pretty(&a, write, indent + 1, out, seen);
+                cur = d;
+            }
+            Value::Nil => break,
+            other => {
+                newline_indent(out, indent + 1);
+                out.push_str(". ");
+                fmt_pretty(&other, write, indent + 3, out, seen);
+                break;
+            }
+        }
+    }
+    for ptr in chain {
+        seen.remove(&ptr);
+    }
+    out.push(')');
+}

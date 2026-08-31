@@ -6,10 +6,11 @@
 //! 通过往 Machine 上压续延帧、返回 `State::Apply`/`State::Eval` 来完成，
 //! 因此它们同样享受尾调用与续延语义（map 因而是 call/cc 安全的）。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::env::Env;
+use crate::env::{lookup_var, Env};
 use crate::eval::{ContKind, Machine, State};
 use crate::number::{self};
 use crate::port::{self, Port};
@@ -22,10 +23,33 @@ use crate::value::{
 
 thread_local! {
     static GLOBAL_ENV: RefCell<Option<Rc<Env>>> = const { RefCell::new(None) };
+    /// random 的 xorshift64* 状态（扩展功能，见 docs/extensions.md）
+    static RNG_STATE: Cell<u64> = const { Cell::new(0x9E37_79B9_7F4A_7C15) };
+    /// runtime 的计时起点（首次调用时初始化）
+    static T0: RefCell<Option<Instant>> = const { RefCell::new(None) };
 }
 
 pub fn global_env() -> Rc<Env> {
     GLOBAL_ENV.with(|g| g.borrow().clone().expect("global env not initialized"))
+}
+
+/// xorshift64*：无依赖的小 PRNG，(random-seed n) 可复现。
+fn next_rand() -> u64 {
+    RNG_STATE.with(|s| {
+        let mut x = s.get();
+        if x == 0 {
+            x = 0x9E37_79B9_7F4A_7C15;
+        }
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        s.set(x);
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    })
+}
+
+fn runtime_start() -> Instant {
+    T0.with(|t| *t.borrow_mut().get_or_insert_with(Instant::now))
 }
 
 pub const PRIMITIVES: &[&str] = &[
@@ -210,6 +234,18 @@ pub const PRIMITIVES: &[&str] = &[
     // misc
     "not",
     "boolean?",
+    // extensions（非 R5RS，见 docs/extensions.md）
+    "runtime",
+    "current-milliseconds",
+    "random",
+    "random-seed",
+    "cd",
+    "current-directory",
+    "file-exists?",
+    "delete-file",
+    "pretty-print",
+    "trace",
+    "untrace",
 ];
 
 pub fn standard_env() -> Rc<Env> {
@@ -230,11 +266,18 @@ pub fn standard_env() -> Rc<Env> {
         }
     }
     GLOBAL_ENV.with(|g| *g.borrow_mut() = Some(env.clone()));
+    // 扩展 prelude：SRFI-1 常用子集（纯 Scheme，见 docs/extensions.md）。
+    // 只新增 R5RS 之外的名字，不影响符合性套件。
+    let forms = reader::read_all_strict(PRELUDE).expect("prelude: parse failed");
+    crate::eval::eval_program(forms, &env).expect("prelude: eval failed");
     env
 }
 
 // ---------------------------------------------------------------------------
 // Argument helpers
+
+/// 扩展 prelude（SRFI-1 常用子集），standard_env 启动时加载。
+const PRELUDE: &str = include_str!("prelude.scm");
 
 fn arity(name: &str, args: &[Value], n: usize) -> Result<(), String> {
     if args.len() != n {
@@ -1253,6 +1296,115 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
         "boolean?" => {
             arity(name, &args, 1)?;
             ret(boolv(matches!(args[0], Value::Bool(_))))
+        }
+
+        // ---- extensions（非 R5RS，见 docs/extensions.md）
+        "runtime" => {
+            arity(name, &args, 0)?;
+            ret(Value::Int(num_bigint::BigInt::from(
+                runtime_start().elapsed().as_millis() as u64,
+            )))
+        }
+        "current-milliseconds" => {
+            arity(name, &args, 0)?;
+            let ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis() as u64;
+            ret(Value::Int(num_bigint::BigInt::from(ms)))
+        }
+        "random" => match args.len() {
+            // (random)   → [0, 1) 浮点
+            0 => ret(Value::Real((next_rand() >> 11) as f64 / 9007199254740992.0)),
+            // (random n) → [0, n) 精确整数，n 为正整数
+            1 => match &args[0] {
+                Value::Int(n) if *n > num_bigint::BigInt::from(0) => {
+                    ret(Value::Int(num_bigint::BigInt::from(next_rand()) % n))
+                }
+                other => Err(format!(
+                    "random: not a positive exact integer: {}",
+                    write_to_string(other)
+                )),
+            },
+            _ => Err(format!("random: expected 0 or 1 args, got {}", args.len())),
+        },
+        "random-seed" => {
+            arity(name, &args, 1)?;
+            match &args[0] {
+                Value::Int(n) => {
+                    let s = num_traits::ToPrimitive::to_i128(n)
+                        .map(|x| x as u64)
+                        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+                    RNG_STATE.with(|r| r.set(if s == 0 { 1 } else { s }));
+                    ret(Value::Unspecified)
+                }
+                other => Err(format!(
+                    "random-seed: not an integer: {}",
+                    write_to_string(other)
+                )),
+            }
+        }
+        "cd" => {
+            arity(name, &args, 1)?;
+            let path = want_str(name, &args[0])?.borrow().clone();
+            std::env::set_current_dir(&path).map_err(|e| format!("cd: {}: {}", path, e))?;
+            ret(Value::Unspecified)
+        }
+        "current-directory" => {
+            arity(name, &args, 0)?;
+            let p = std::env::current_dir().map_err(|e| format!("current-directory: {}", e))?;
+            ret(make_string(p.to_string_lossy().into_owned()))
+        }
+        "file-exists?" => {
+            arity(name, &args, 1)?;
+            let path = want_str(name, &args[0])?;
+            let exists = std::path::Path::new(&*path.borrow()).exists();
+            ret(boolv(exists))
+        }
+        "delete-file" => {
+            arity(name, &args, 1)?;
+            let path = want_str(name, &args[0])?.borrow().clone();
+            std::fs::remove_file(&path).map_err(|e| format!("delete-file: {}: {}", path, e))?;
+            ret(Value::Unspecified)
+        }
+        "pretty-print" => {
+            if args.is_empty() {
+                return Err(format!("{}: needs an argument", name));
+            }
+            let p = if args.len() >= 2 {
+                want_port_out(name, &args[1])?
+            } else {
+                port::current_output()
+            };
+            p.write_str(&crate::printer::pretty_to_string(&args[0]))?;
+            ret(Value::Unspecified)
+        }
+        // trace/untrace 接受符号（在全局环境解析，并用作展示名）或过程对象
+        "trace" | "untrace" => {
+            if args.is_empty() {
+                if name == "untrace" {
+                    crate::eval::trace_clear();
+                    return ret(Value::Unspecified);
+                }
+                return Err("trace: needs at least one argument".into());
+            }
+            for a in &args {
+                let (proc, label) = match a {
+                    Value::Symbol(s) => {
+                        let v = lookup_var(&global_env(), *s)
+                            .map(|loc| loc.borrow().clone())
+                            .ok_or_else(|| crate::value::unbound_msg(*s))?;
+                        (v, sym_str(*s))
+                    }
+                    other => (other.clone(), write_to_string(other)),
+                };
+                if name == "trace" {
+                    crate::eval::trace_add(&proc, label)?;
+                } else {
+                    crate::eval::trace_remove(&proc);
+                }
+            }
+            ret(Value::Unspecified)
         }
 
         other => cxr_dispatch(other, &args),
