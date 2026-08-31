@@ -32,9 +32,9 @@
 ## R5RS 之外的扩展
 
 `runtime current-milliseconds random random-seed cd current-directory
-file-exists? delete-file pretty-print trace untrace` 与 prelude
-（SRFI-1 子集）等扩展全部为新增名字，见
-[extensions.md](extensions.md)。
+file-exists? delete-file pretty-print trace untrace require` 与
+`src/libs/` 模块库（list/string，需 `(require '名字)` 主动加载）
+全部为新增名字，见 [extensions.md](extensions.md)。
 
 ## 有意的偏差与省略
 
@@ -45,13 +45,16 @@ file-exists? delete-file pretty-print trace untrace` 与 prelude
 | **指数标记** | 浮点指数只支持 `e/E`；R5RS 词法里的 `s f d l` 精度标记未支持。 |
 | **`scheme-report-environment`/`null-environment`** | 返回完整交互环境，而非裁剪过的"只含报告绑定"环境。 |
 | **`char-ready?`** | 恒 `#t`。 |
-| **`with-input-from-file`/`with-output-to-file`** | 只在过程正常返回时恢复端口；被 call/cc 跳出时不恢复（R5RS 未明确规定，属于已知简化）。 |
 | **嵌套 `run()` 的续延截断** | quasiquote 的 unquote 求值与 `eval` 内建过程是递归调用求值器实现的；在其中捕获的续延不包含外层机器栈（R5RS 对 `eval` 内捕获续延本就接近未规定；quasiquote 内进行续延跳转的代码极为罕见）。 |
 | **`case` 脱糖依赖 `memv`** | `case` 脱糖成 `(if (memv k '(datums...)) ...)`，若用户局部重定义了 `memv`，`case` 会用到它（理论上应引用定义处绑定；实际影响几乎为零）。 |
 | **重复模式变量不查错** | 同一 pattern 里同一模式变量出现两次时后绑定覆盖先绑定（R5RS 说 an error，我们不做检查）。 |
 | **同层单 ellipsis** | pattern 同一层出现两个 ellipsis（`x ... y ...`）只处理第一个。 |
 | **宏生成宏的深度** | rename 锚定单层 def_env；极端合成宏没有完整语法对象系统的保证（已知局限，见 syntax-rules.md）。 |
 | **报错信息** | 不含源码位置；`error` 过程打印参数后以非零退出/可捕获错误呈现。 |
+| **gensym 可伪造** | 卫生靠"gensym 名字带空格、reader 读不出来"假设；但 `(string->symbol " if.3")` 走同一 intern 表可拿到同一个符号，理论上有意构造的用户代码可击穿卫生边界。 |
+| **`GLOBAL_ENV` 是 ambient authority** | `load`、`(trace 'sym)`、environment specifier 读的都是"最后一次 `standard_env()` 创建的环境"。单 REPL/单测试下与实际运行环境一致；同线程创建第二个 env（嵌入宿主）时会静默错位。 |
+| **thread_local 不随 `standard_env` 重置** | RNG 状态、trace 表、计时起点是线程本地全局量；测试/嵌入场景多次建 env 时它们保持延续，不复位。 |
+| **RENAMES 表只增不减** | 每次宏展开登记一条 fresh→(orig, Rc<Env>)，长期 REPL 会话内存单调增长并 pin 住环境链。 |
 
 ## 性能层面的已知取舍
 

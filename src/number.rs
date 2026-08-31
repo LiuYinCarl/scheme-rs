@@ -186,19 +186,24 @@ pub fn compare(op: &str, args: &[Value]) -> Result<Value, String> {
         want_num(op, &w[0])?;
         want_num(op, &w[1])?;
         let ord = if inexact {
-            to_f64_lossy(&w[0])
-                .partial_cmp(&to_f64_lossy(&w[1]))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            to_f64_lossy(&w[0]).partial_cmp(&to_f64_lossy(&w[1]))
         } else {
-            cmp_exact(&to_exact(&w[0]).unwrap(), &to_exact(&w[1]).unwrap())
+            Some(cmp_exact(
+                &to_exact(&w[0]).unwrap(),
+                &to_exact(&w[1]).unwrap(),
+            ))
         };
-        let ok = match op {
-            "=" => ord == std::cmp::Ordering::Equal,
-            "<" => ord == std::cmp::Ordering::Less,
-            ">" => ord == std::cmp::Ordering::Greater,
-            "<=" => ord != std::cmp::Ordering::Greater,
-            ">=" => ord != std::cmp::Ordering::Less,
-            _ => unreachable!(),
+        // NaN 参与比较时 partial_cmp 为 None：按 IEEE 语义所有比较均为 #f
+        let ok = match ord {
+            None => false,
+            Some(ord) => match op {
+                "=" => ord == std::cmp::Ordering::Equal,
+                "<" => ord == std::cmp::Ordering::Less,
+                ">" => ord == std::cmp::Ordering::Greater,
+                "<=" => ord != std::cmp::Ordering::Greater,
+                ">=" => ord != std::cmp::Ordering::Less,
+                _ => unreachable!(),
+            },
         };
         result = result && ok;
     }
@@ -459,7 +464,12 @@ pub fn expt(args: &[Value]) -> Result<Value, String> {
             }
             let (sign, mag) = e.clone().into_parts();
             let neg = sign == num_bigint::Sign::Minus;
-            let n = mag.to_u32().unwrap_or(u32::MAX);
+            // pow 只接受 i32；超出范围的指数无法精确计算，直接报错
+            // （钳到 u32::MAX 会溢出成 -1，(expt 2 4294967296) 曾错误得到 1/2）
+            let n = mag
+                .to_u32()
+                .filter(|&n| n <= i32::MAX as u32)
+                .ok_or_else(|| "expt: exponent too large".to_string())?;
             let r = b.pow(n as i32);
             return Ok(norm(if neg { BigRational::one() / r } else { r }));
         }
@@ -611,6 +621,9 @@ pub fn parse_number_radix(s: &str, default_radix: u32) -> Option<Value> {
         }
     }
     match rest {
+        // R5RS：无穷/NaN 没有精确表示，#e 前缀下不是合法数字
+        // （返回 None，reader 报 "bad number"、string->number 返回 #f）
+        "+inf.0" | "-inf.0" | "+nan.0" | "-nan.0" if exactness == Some(true) => return None,
         "+inf.0" => return Some(Value::Real(f64::INFINITY)),
         "-inf.0" => return Some(Value::Real(f64::NEG_INFINITY)),
         "+nan.0" | "-nan.0" => return Some(Value::Real(f64::NAN)),

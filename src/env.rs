@@ -8,10 +8,11 @@
 //! 改过之后，重入者必须通过同一个 location 看到**后写**的值
 //! （pitfall 1.1/1.2 就是卡这个；存值的话续延看到的会是旧拷贝）。
 //!
-//! 每帧有两个命名空间：普通变量（vars）和宏（macros）。它们共存且互相
-//! 遮蔽：R5RS 不允许保留字，局部 `(define foo +)` 可以盖住同名宏，
-//! 局部宏也可以盖住变量；`resolve` 逐帧先查 vars 再查 macros，
-//! 都没命中才回退到内建关键字（见 is_keyword）。
+//! 每帧有两个命名空间：普通变量（vars）和宏（macros）。同一帧内二者
+//! 互斥——后定义者生效：define 清掉同帧同名宏绑定，define_macro 清掉
+//! 同帧同名变量绑定。跨帧则是遮蔽关系：局部 `(define foo +)` 可以盖住
+//! 外层的同名宏，局部宏也可以盖住外层变量；`resolve` 逐帧先查 vars 再
+//! 查 macros，都没命中才回退到内建关键字（见 is_keyword）。
 //!
 //! 卫生重命名的解析策略：沿环境链找不到 fresh 符号时，查 rename 表，
 //! 回到 (原符号, 定义处环境) 重新解析——这样模板引入的 `+`、`if` 等
@@ -41,7 +42,12 @@ impl Env {
 
     /// Define (or redefine) in *this* frame. Redefinition updates the same
     /// location so existing closures observe the new value.
+    ///
+    /// 变量与宏两个命名空间在同帧内互斥：后定义者生效。define 一个变量时
+    /// 清掉同帧同名宏绑定（对称地 define_macro 清变量），于是 resolve 的
+    /// "先查 vars 再查 macros" 顺序不会观察到过期绑定，顺序本身无需调整。
     pub fn define(&self, s: Sym, v: Value) {
+        self.macros.borrow_mut().remove(&s);
         let mut vars = self.vars.borrow_mut();
         if let Some(loc) = vars.get(&s) {
             *loc.borrow_mut() = v;
@@ -57,6 +63,7 @@ impl Env {
     }
 
     pub fn define_macro(&self, s: Sym, t: Rc<Transformer>) {
+        self.vars.borrow_mut().remove(&s);
         self.macros.borrow_mut().insert(s, t);
     }
 }
@@ -175,15 +182,20 @@ pub fn free_id_eq(s1: Sym, env1: &Rc<Env>, s2: Sym, env2: &Rc<Env>) -> bool {
     }
 }
 
+/// rename 链长度上限。链是严格无环的（每环都是新 gensym），长度即宏
+/// 展开的嵌套深度；触顶说明宏递归过深，必须显式报错——静默返回中间名
+/// 会让 else/=>/unquote 的判定悄悄出错。
+const MAX_RENAME_CHAIN: usize = 1000;
+
 /// Resolve an identifier to its "auxiliary syntax" name, following renames.
 /// Returns None if the identifier is bound (shadowed) and thus no longer
 /// refers to auxiliary syntax (e.g. a locally bound `else`, `=>`, `unquote`).
-pub fn aux_name(env: &Rc<Env>, s: Sym) -> Option<String> {
+pub fn aux_name(env: &Rc<Env>, s: Sym) -> Result<Option<String>, String> {
     // bound anywhere in the current chain?
     let mut e = env.clone();
     loop {
         if e.vars.borrow().contains_key(&s) || e.macros.borrow().contains_key(&s) {
-            return None;
+            return Ok(None);
         }
         match &e.parent {
             Some(p) => e = p.clone(),
@@ -192,16 +204,20 @@ pub fn aux_name(env: &Rc<Env>, s: Sym) -> Option<String> {
     }
     // follow the rename chain to the original identifier
     let mut cur = s;
-    for _ in 0..1000 {
+    for _ in 0..MAX_RENAME_CHAIN {
         match get_rename(cur) {
             Some((orig, denv)) => {
                 if lookup_var(&denv, orig).is_some() || lookup_macro(&denv, orig).is_some() {
-                    return None; // bound at the macro definition site
+                    return Ok(None); // bound at the macro definition site
                 }
                 cur = orig;
             }
-            None => break,
+            None => return Ok(Some(crate::value::sym_str(cur))),
         }
     }
-    Some(crate::value::sym_str(cur))
+    Err(format!(
+        "rename chain for `{}` exceeds {} links: macro expansion too deep?",
+        crate::value::sym_str(s),
+        MAX_RENAME_CHAIN
+    ))
 }

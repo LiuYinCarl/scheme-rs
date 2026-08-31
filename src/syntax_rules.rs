@@ -315,14 +315,21 @@ impl<'a> Expander<'a> {
             }
             Value::Pair(_) => {
                 let (items, rest) = split_list(tmpl);
-                // (quote <datum>) : identifiers in the datum are data
+                // (quote <datum>) : identifiers in the datum are data。
+                // 不能只看名字字符串：若宏定义环境把 quote 重绑定为变量/宏，
+                // 这里是普通组合，应展开为引用而非 quotation。判定经过
+                // def_env 的解析（含 rename 回退），与求值器识别 quote
+                // 特殊形式的标准一致。
                 if !data {
                     if let Some(Value::Symbol(q)) = items.first() {
-                        if sym_str(*q) == "quote"
-                            && !b.contains_key(q)
+                        let is_quote = !b.contains_key(q)
+                            && matches!(
+                                crate::env::resolve(&self.t.def_env, *q),
+                                Meaning::Keyword(k) if sym_str(k) == "quote"
+                            )
                             && items.len() == 2
-                            && rest.is_nil()
-                        {
+                            && rest.is_nil();
+                        if is_quote {
                             let datum = self.expand_tmpl(&items[1], b, false, true)?;
                             return Ok(crate::value::list_from_vec(vec![
                                 Value::Symbol(self.rename(*q)),

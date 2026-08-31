@@ -44,8 +44,62 @@ pub struct ContFrame {
 }
 
 pub struct DynWind {
-    pub before: Value,
-    pub after: Value,
+    pub before: WindHook,
+    pub after: WindHook,
+}
+
+/// dynamic-wind 的 before/after 钩子：多数是 Scheme 层 thunk；端口切换
+/// （with-input-from-file/with-output-to-file）是原生操作，没有对应的
+/// Scheme 过程可调用，用专用钩子挂在同一套 wind 机制上，从而自动获得
+/// 逃逸/重入时的正确执行时机。
+#[derive(Clone)]
+pub enum WindHook {
+    Thunk(Value),
+    /// 进入动态范围：保存当前端口，切换到新端口。
+    PortEnter(Rc<PortSwitch>),
+    /// 离开动态范围：恢复保存的端口，并关闭新端口（close 内含 flush，
+    /// 写文件不丢数据）。
+    PortLeave(Rc<PortSwitch>),
+}
+
+pub struct PortSwitch {
+    pub is_input: bool,
+    pub new_port: Rc<crate::port::Port>,
+    /// 每次进入时保存的当时端口（重入时 before 会再次执行，必须重新保存）。
+    pub saved: RefCell<Option<Rc<crate::port::Port>>>,
+}
+
+/// 执行一个 wind 钩子。Scheme thunk 走 Apply；原生端口钩子直接生效，
+/// 返回 Unspecified 交给续延（效果等同于一个立即返回的 thunk）。
+pub fn apply_hook(hook: &WindHook) -> State {
+    match hook {
+        WindHook::Thunk(v) => State::Apply(v.clone(), vec![]),
+        WindHook::PortEnter(sw) => {
+            let saved = if sw.is_input {
+                crate::port::current_input()
+            } else {
+                crate::port::current_output()
+            };
+            *sw.saved.borrow_mut() = Some(saved);
+            if sw.is_input {
+                crate::port::set_current_input(sw.new_port.clone());
+            } else {
+                crate::port::set_current_output(sw.new_port.clone());
+            }
+            State::Return(Value::Unspecified)
+        }
+        WindHook::PortLeave(sw) => {
+            if let Some(saved) = sw.saved.borrow_mut().take() {
+                if sw.is_input {
+                    crate::port::set_current_input(saved);
+                } else {
+                    crate::port::set_current_output(saved);
+                }
+            }
+            sw.new_port.close();
+            State::Return(Value::Unspecified)
+        }
+    }
 }
 
 /// dynamic-wind 的动态环境也是 persistent 链表。每个节点记录深度，
@@ -158,9 +212,9 @@ pub enum ContKind {
         env: Rc<Env>,
     },
     DynWindBefore {
-        before: Value,
+        before: WindHook,
         thunk: Value,
-        after: Value,
+        after: WindHook,
     },
     DynWindBody {
         wind: Rc<DynWind>,
@@ -169,7 +223,7 @@ pub enum ContKind {
         value: Value,
     },
     WindSteps {
-        steps: Vec<(Value, WindList)>,
+        steps: Vec<(WindHook, WindList)>,
         value: Value,
         target: Rc<ContObj>,
     },
@@ -194,10 +248,6 @@ pub enum ContKind {
     },
     ClosePortAfter {
         port: Rc<crate::port::Port>,
-    },
-    RestorePorts {
-        saved_in: Rc<crate::port::Port>,
-        saved_out: Rc<crate::port::Port>,
     },
     GetOutputString {
         port: Rc<crate::port::Port>,
@@ -474,7 +524,7 @@ fn resume(m: &mut Machine, kind: &ContKind, v: Value) -> Result<State, String> {
                 m.winds = n.parent.clone();
             }
             m.push(ContKind::DynWindAfter { value: v });
-            Ok(State::Apply(wind.after.clone(), vec![]))
+            Ok(apply_hook(&wind.after))
         }
         ContKind::DynWindAfter { value } => Ok(State::Return(value.clone())),
         ContKind::WindSteps {
@@ -488,14 +538,14 @@ fn resume(m: &mut Machine, kind: &ContKind, v: Value) -> Result<State, String> {
                 Ok(State::Return(value.clone()))
             } else {
                 let mut steps = steps.clone();
-                let (thunk, w) = steps.remove(0);
+                let (hook, w) = steps.remove(0);
                 m.winds = w;
                 m.push(ContKind::WindSteps {
                     steps,
                     value: value.clone(),
                     target: target.clone(),
                 });
-                Ok(State::Apply(thunk, vec![]))
+                Ok(apply_hook(&hook))
             }
         }
         ContKind::Force { promise } => {
@@ -537,14 +587,6 @@ fn resume(m: &mut Machine, kind: &ContKind, v: Value) -> Result<State, String> {
         }
         ContKind::ClosePortAfter { port } => {
             port.close();
-            Ok(State::Return(v))
-        }
-        ContKind::RestorePorts {
-            saved_in,
-            saved_out,
-        } => {
-            crate::port::set_current_input(saved_in.clone());
-            crate::port::set_current_output(saved_out.clone());
             Ok(State::Return(v))
         }
         ContKind::GetOutputString { port } => {
@@ -601,16 +643,23 @@ fn advance_map(
 // ---------------------------------------------------------------------------
 // Trace support（扩展功能，见 docs/extensions.md）
 
-thread_local! {
-    /// 被跟踪的过程：key 为过程的稳定标识，value 为展示名。
-    static TRACED: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
+/// 过程的稳定标识。闭包用创建时分配的 id（见 Closure::id）；内建过程用
+/// 名字的 'static 字符串指针（稳定）。两个子空间分开，互不冲突。
+#[derive(PartialEq, Eq, Hash)]
+enum TraceKey {
+    Closure(usize),
+    Prim(usize),
 }
 
-/// 过程的稳定标识：闭包用 Rc 指针，内建过程用名字的 'static 字符串指针。
-fn trace_key(proc: &Value) -> Option<usize> {
+thread_local! {
+    /// 被跟踪的过程：key 为过程的稳定标识，value 为展示名。
+    static TRACED: RefCell<HashMap<TraceKey, String>> = RefCell::new(HashMap::new());
+}
+
+fn trace_key(proc: &Value) -> Option<TraceKey> {
     match proc {
-        Value::Closure(c) => Some(Rc::as_ptr(c) as usize),
-        Value::Primitive(name) => Some(name.as_ptr() as usize),
+        Value::Closure(c) => Some(TraceKey::Closure(c.id)),
+        Value::Primitive(name) => Some(TraceKey::Prim(name.as_ptr() as usize)),
         _ => None,
     }
 }
@@ -708,7 +757,7 @@ pub fn apply(m: &mut Machine, proc: Value, args: Vec<Value>) -> Result<State, St
             // 内。每个 thunk 求值时动态环境要处在"已离开/未进入"的中间
             // 状态，所以 steps 里为每个 thunk 记下当时的 wind 链。
             let (afters, befores) = wind_diff(&m.winds, &k.winds);
-            let mut steps: Vec<(Value, WindList)> = Vec::new();
+            let mut steps: Vec<(WindHook, WindList)> = Vec::new();
             let mut w = m.winds.clone();
             for dw in &afters {
                 w = wind_parent(&w);
@@ -730,7 +779,7 @@ pub fn apply(m: &mut Machine, proc: Value, args: Vec<Value>) -> Result<State, St
                     target: k.clone(),
                 });
                 m.winds = first.1;
-                Ok(State::Apply(first.0, vec![]))
+                Ok(apply_hook(&first.0))
             }
         }
         _ => Err(format!("not a procedure: {}", write_to_string(&proc))),
@@ -931,12 +980,7 @@ fn special(m: &mut Machine, kw: Sym, expr: &Value, env: Rc<Env>) -> Result<State
             }
             let (fixed, rest) = parse_params(&args[0])?;
             Ok(State::Return(Value::Closure(Rc::new(
-                crate::value::Closure {
-                    fixed,
-                    rest,
-                    body: Rc::new(args[1..].to_vec()),
-                    env,
-                },
+                crate::value::Closure::new(fixed, rest, Rc::new(args[1..].to_vec()), env),
             ))))
         }
         "if" => {
@@ -1314,7 +1358,7 @@ fn desugar_cond(clauses: &[Value], env: &Rc<Env>) -> Result<Value, String> {
     let first = &clause[0];
     // else clause
     if let Value::Symbol(s) = first {
-        if aux_name(env, *s).as_deref() == Some("else") {
+        if aux_name(env, *s)?.as_deref() == Some("else") {
             if clauses.len() != 1 {
                 return Err("cond: else must be last".into());
             }
@@ -1333,7 +1377,7 @@ fn desugar_cond(clauses: &[Value], env: &Rc<Env>) -> Result<Value, String> {
         ]));
     }
     if let Value::Symbol(s) = &clause[1] {
-        if aux_name(env, *s).as_deref() == Some("=>") {
+        if aux_name(env, *s)?.as_deref() == Some("=>") {
             if clause.len() != 3 {
                 return Err("cond: bad => clause".into());
             }
@@ -1379,13 +1423,13 @@ fn case_chain(k: &Value, clauses: &[Value], env: &Rc<Env>) -> Result<Value, Stri
     let rest = case_chain(k, &clauses[1..], env)?;
     // else clause
     if let Value::Symbol(s) = &clause[0] {
-        if aux_name(env, *s).as_deref() == Some("else") {
+        if aux_name(env, *s)?.as_deref() == Some("else") {
             if clauses.len() != 1 {
                 return Err("case: else must be last".into());
             }
             if clause.len() >= 2 {
                 if let Value::Symbol(a) = &clause[1] {
-                    if aux_name(env, *a).as_deref() == Some("=>") && clause.len() == 3 {
+                    if aux_name(env, *a)?.as_deref() == Some("=>") && clause.len() == 3 {
                         return Ok(vl(vec![clause[2].clone(), k.clone()]));
                     }
                 }
@@ -1397,7 +1441,7 @@ fn case_chain(k: &Value, clauses: &[Value], env: &Rc<Env>) -> Result<Value, Stri
     // => variant
     if clause.len() == 3 {
         if let Value::Symbol(a) = &clause[1] {
-            if aux_name(env, *a).as_deref() == Some("=>") {
+            if aux_name(env, *a)?.as_deref() == Some("=>") {
                 return Ok(vl(vec![
                     vs("if"),
                     vl(vec![vs("memv"), k.clone(), vl(vec![vs("quote"), datums])]),
@@ -1426,7 +1470,7 @@ fn quasiquote(t: &Value, depth: usize, env: &Rc<Env>) -> Result<Value, String> {
                 (b.0.clone(), b.1.clone())
             };
             if let Value::Symbol(s) = &a {
-                if aux_name(env, *s).as_deref() == Some("unquote") {
+                if aux_name(env, *s)?.as_deref() == Some("unquote") {
                     let (xs, tail) =
                         list_to_vec(&d).ok_or_else(|| "unquote: circular".to_string())?;
                     if xs.len() == 1 && tail.is_nil() {
@@ -1437,7 +1481,7 @@ fn quasiquote(t: &Value, depth: usize, env: &Rc<Env>) -> Result<Value, String> {
                     }
                     return Err("unquote: malformed".into());
                 }
-                if aux_name(env, *s).as_deref() == Some("quasiquote") {
+                if aux_name(env, *s)?.as_deref() == Some("quasiquote") {
                     let (xs, tail) =
                         list_to_vec(&d).ok_or_else(|| "quasiquote: circular".to_string())?;
                     if xs.len() == 1 && tail.is_nil() {
@@ -1455,7 +1499,7 @@ fn quasiquote(t: &Value, depth: usize, env: &Rc<Env>) -> Result<Value, String> {
                     (b.0.clone(), b.1.clone())
                 };
                 if let Value::Symbol(s) = &aa {
-                    if aux_name(env, *s).as_deref() == Some("unquote-splicing") {
+                    if aux_name(env, *s)?.as_deref() == Some("unquote-splicing") {
                         let (xs, tail) = list_to_vec(&ad)
                             .ok_or_else(|| "unquote-splicing: circular".to_string())?;
                         if xs.len() == 1 && tail.is_nil() {
@@ -1556,7 +1600,7 @@ pub fn eval_program(forms: Vec<Value>, env: &Rc<Env>) -> Result<Value, String> {
 }
 
 pub fn eval_str(s: &str, env: &Rc<Env>) -> Result<Value, String> {
-    let forms = reader::read_all(s).map_err(|e| match e {
+    let forms = reader::read_all_strict(s).map_err(|e| match e {
         reader::ReadError::Eof => "unexpected end of input".to_string(),
         reader::ReadError::Msg(m) => m,
     })?;

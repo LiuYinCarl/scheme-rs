@@ -4,8 +4,9 @@ R5RS Scheme 解释器。启动：`cargo run` 进入 REPL，`cargo run -- file.sc
 
 REPL 特性：`In [n]:` 编号提示符、多行编辑（括号未闭合回车自动续行，可
 跨行修改，历史整体召回）、Tab 补全、语法高亮
-（`--no-highlight` 关闭）、历史记录持久化、`(exit)` 或 Ctrl-D 退出、
-Ctrl-C 丢弃当前输入。
+（`--no-highlight` 关闭）、实时错误提示（词法错误与顶层未绑定符号以
+暗灰色文字显示在光标后，`--no-hint` 关闭）、历史记录持久化、
+`(exit)` 或 Ctrl-D 退出、Ctrl-C 丢弃当前输入。
 
 ## 特殊形式
 
@@ -121,18 +122,26 @@ Ctrl-C 丢弃当前输入。
 (trace 'fact) (fact 3) (untrace 'fact)   ; 打印调用轨迹
 ```
 
-Prelude（启动自动加载，SRFI-1 子集）：
-`iota filter fold fold-right last take drop delete-duplicates`
+模块库（需主动加载，见 extensions.md）：
+
+- `(require 'list)` — `iota filter fold fold-right reduce last take drop
+  take-while drop-while find any every zip partition delete-duplicates sort`
+- `(require 'string)` — `string-reverse string-repeat string-trim
+  string-prefix? string-suffix? string-contains? string-split string-join
+  string-replace`
 
 ```scheme
-(fold + 0 (iota 100))   ; => 4950
-(take (iota 10) 3)      ; => (0 1 2)
+(require 'list)
+(sort '(3 1 2) <)           ; => (1 2 3)
+(reduce + 0 (iota 100))     ; => 4950
 ```
 
 ## REPL 专属
 
 - `(time expr)` — 计时并打印 `; time: X.XXX ms`
 - `(load "path")` — 成功打印 `; loaded path`
+- `(unload "path")` / `(reload "path")` — 回滚/重载一次 load（只回滚命名
+  空间绑定，文件副作用不撤销）
 - `(view)` — 高亮显示本会话所有求值成功的顶层定义
 - `(view 'name)` — 只看某个定义（含重定义历史中的最新版本）
 - `(view "path")` — 高亮显示文件内容

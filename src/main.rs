@@ -10,13 +10,16 @@ use scheme_rs::repl;
 
 fn main() -> ExitCode {
     let mut highlight = true;
+    let mut hint = true;
     let mut file: Option<String> = None;
     for a in std::env::args().skip(1) {
         match a.as_str() {
             "--no-highlight" => highlight = false,
+            "--no-hint" => hint = false,
             "-h" | "--help" => {
-                println!("Usage: scheme-rs [--no-highlight] [file.scm]");
+                println!("Usage: scheme-rs [--no-highlight] [--no-hint] [file.scm]");
                 println!("  --no-highlight  关闭 REPL 语法高亮（默认开启）");
+                println!("  --no-hint       关闭 REPL 实时错误提示（默认开启）");
                 println!("  file.scm        执行文件；缺省进入 REPL");
                 return ExitCode::SUCCESS;
             }
@@ -31,7 +34,7 @@ fn main() -> ExitCode {
     match file {
         Some(f) => run_file(&f, &env),
         None => {
-            repl::run(&env, highlight);
+            repl::run(&env, highlight, hint);
             ExitCode::SUCCESS
         }
     }

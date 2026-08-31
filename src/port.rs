@@ -88,6 +88,10 @@ impl Port {
         })
     }
 
+    pub fn is_closed(&self) -> bool {
+        matches!(&*self.inner.borrow(), PortInner::Closed)
+    }
+
     pub fn read_char(&self) -> Option<char> {
         let mut inner = self.inner.borrow_mut();
         match &mut *inner {

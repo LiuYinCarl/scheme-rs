@@ -38,17 +38,37 @@ trace 输出示例：
 2
 ```
 
-## Prelude（src/prelude.scm）
+## 模块库（src/libs/*.scm）
 
-SRFI-1 常用子集，纯 R5RS 实现，`include_str!` 内嵌、`standard_env`
-启动时自动加载，REPL 与脚本模式都可用：
+借自 SRFI-1 / Python / Ruby 标准库的常用工具，纯 R5RS 实现，
+`include_str!` 内嵌。**必须主动加载**：`(require '模块名)`，不加载就
+不会占用全局环境里的任何名字，不会和你的同名定义冲突。
 
-- `(iota count [start step])` — 等差列表
-- `(filter pred xs)` — 保留满足条件的元素
-- `(fold f init xs)` / `(fold-right f init xs)` — 左/右折叠
-- `(last xs)` — 最后一个元素
-- `(take xs n)` / `(drop xs n)` — 取/去前 n 个元素
-- `(delete-duplicates xs)` — 去重（`member` 语义，保留首次出现）
+### `(require 'list)` — 列表工具
+
+`iota` `filter` `fold` `fold-right` `reduce`（空表返回 ridentity）
+`last` `take` `drop` `take-while` `drop-while` `find`（无则 #f）
+`any` `every` `zip` `partition` `delete-duplicates` `sort`（稳定归并排序，
+`(sort xs less?)`）
+
+```scheme
+(require 'list)
+(sort '(3 1 2) <)            ; => (1 2 3)
+(reduce + 0 (iota 100))      ; => 4950
+(partition odd? '(1 2 3 4))  ; => ((1 3) (2 4))
+```
+
+### `(require 'string)` — 字符串工具
+
+`string-reverse` `string-repeat` `string-trim` `string-prefix?`
+`string-suffix?` `string-contains?`（返回下标或 #f）`string-split`
+`string-join` `string-replace`
+
+```scheme
+(require 'string)
+(string-split "a,b,c" #\,)       ; => ("a" "b" "c")
+(string-replace "a-b" "-" "+")   ; => "a+b"
+```
 
 ## REPL 专属（src/repl.rs）
 
@@ -56,6 +76,12 @@ SRFI-1 常用子集，纯 R5RS 实现，`include_str!` 内嵌、`standard_env`
 
 - `(time expr)` — 求值 expr 并打印 `; time: X.XXX ms`
 - `(load "path")` 成功时打印 `; loaded path`（嵌套 load 不打印）
-- `(view)` — 高亮列出本会话所有求值成功的顶层 `define`/`define-syntax`
-  （重定义只保留最新版本）；`(view 'name)` 只看某个定义；
-  `(view "path")` 高亮查看文件。非 TTY 模式自动退化为无颜色输出
+- `(view)` — 高亮列出本会话的定义：直接输入的顶层 `define`/`define-syntax`
+  和 `load` 文件里的定义带源码（重定义只保留最新版本）；`require` 加载的
+  模块函数等未记录源码的绑定以名字列表附注
+- `(view 'name)` — 只看某个定义；名字存在但未记录源码时给出提示
+- `(view "path")` — 高亮查看文件。非 TTY 模式自动退化为无颜色输出
+- `(unload "path")` — 回滚一次顶层 `load`：删除文件新定义的绑定、恢复被
+  覆盖的旧绑定（变量与宏两张表都处理）。只回滚命名空间，文件里的副作用
+  （`set!` 已有变量、I/O）不撤销；中途失败的 load 也可 unload 掉部分定义
+- `(reload "path")` — 先回滚再重新 load（没有加载记录也能直接加载）

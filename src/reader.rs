@@ -55,7 +55,8 @@ impl CharSource for StrSource {
 }
 
 fn is_delimiter(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '(' | ')' | '"' | ';' | '\'' | '`' | ',' | '|')
+    // R5RS 没有 |...| 符号语法，'|' 只是普通符号字符，不是分隔符
+    c.is_whitespace() || matches!(c, '(' | ')' | '"' | ';' | '\'' | '`' | ',')
 }
 
 fn skip_ws(src: &mut dyn CharSource) {

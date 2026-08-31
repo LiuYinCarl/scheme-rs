@@ -11,6 +11,8 @@
 //! 文件执行模式不走这里（见 main.rs）。
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -22,12 +24,12 @@ use rustyline::hint::Hinter;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context, Editor, Helper};
 
-use crate::env::{is_keyword, lookup_var, Env};
+use crate::env::{resolve, Env, Meaning};
 use crate::eval;
 use crate::number;
 use crate::printer::write_to_string;
 use crate::reader::{self, ReadError};
-use crate::value::{intern, list_to_vec, sym_str, Sym, Value};
+use crate::value::{intern, list_from_vec, list_to_vec, sym_str, Sym, Value};
 
 // ---------------------------------------------------------------------------
 // 纯逻辑部分（可单元测试）
@@ -183,11 +185,15 @@ fn handle_view(req: ViewReq, defs: &[(Sym, String)], env: &Rc<Env>, colors: Colo
             Err(e) => println!("{}", colors.error(&format!("Error: view: {}: {}", path, e))),
         },
         ViewReq::All => {
-            if defs.is_empty() {
-                println!("; no definitions yet");
-            }
             for (_, src) in defs {
                 print_highlighted(src, env, colors);
+            }
+            // require 的模块函数等：有绑定但没记录源码，列名字附注
+            let extra = untracked_names(env, defs);
+            if defs.is_empty() && extra.is_empty() {
+                println!("; no definitions yet");
+            } else if !extra.is_empty() {
+                println!("; also defined (source not recorded): {}", extra.join(" "));
             }
         }
         ViewReq::Name(name) => {
@@ -199,10 +205,167 @@ fn handle_view(req: ViewReq, defs: &[(Sym, String)], env: &Rc<Env>, colors: Colo
                 }
             }
             if !found {
-                println!("; no definition for {}", sym_str(name));
+                if matches!(resolve(env, name), Meaning::Var(_) | Meaning::Macro(_)) {
+                    println!("; no recorded source for {}", sym_str(name));
+                } else {
+                    println!("; no definition for {}", sym_str(name));
+                }
             }
         }
     }
+}
+
+/// 全局环境里有绑定但 (view) 未记录源码的名字（require 的模块函数等）。
+fn untracked_names(env: &Rc<Env>, defs: &[(Sym, String)]) -> Vec<String> {
+    let mut root = env.clone();
+    while let Some(p) = root.parent.clone() {
+        root = p;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (s, loc) in root.vars.borrow().iter() {
+        let name = sym_str(*s);
+        if name.contains(' ') {
+            continue; // 宏展开产生的重命名符号
+        }
+        if matches!(&*loc.borrow(), Value::Primitive(_)) {
+            continue; // 内建过程
+        }
+        if defs.iter().any(|(d, _)| *d == *s) {
+            continue;
+        }
+        out.push(name);
+    }
+    out.sort();
+    out
+}
+
+/// 顶层 load 成功后，把文件里的顶层 define 也纳入 (view) 记录。
+fn record_file_defs(path: &str, defs: &mut Vec<(Sym, String)>) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(forms) = reader::read_all_strict(&content) else {
+        return;
+    };
+    for f in &forms {
+        if let Some(name) = defined_name(f) {
+            let src = crate::printer::pretty_to_string(f);
+            defs.retain(|(n2, _)| *n2 != name);
+            defs.push((name, src));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (unload "path") / (reload "path")：命名空间回滚
+//
+// 只回滚绑定表：load 前快照被覆盖的旧绑定，unload 时删除新绑定、恢复旧
+// 绑定（变量与宏两张表都处理）。文件里的副作用（set! 已有变量、I/O）无法
+// 撤销——与 Clojure tools.namespace 的 refresh 语义一致，见
+// docs/extensions.md。
+
+/// 一次顶层 load 的快照：文件定义的名字 + 它们覆盖前的旧绑定。
+/// 注意必须存值的克隆而不是 location 的 Rc：define 重定义是原地更新同一
+/// 个 location，存 Rc 的话快照会跟着 load 一起被改掉。
+struct LoadRecord {
+    names: Vec<Sym>,
+    saved_vars: Vec<(Sym, Option<Value>)>,
+    saved_macros: Vec<(Sym, Option<Rc<crate::syntax_rules::Transformer>>)>,
+}
+
+fn global_root(env: &Rc<Env>) -> Rc<Env> {
+    let mut root = env.clone();
+    while let Some(p) = root.parent.clone() {
+        root = p;
+    }
+    root
+}
+
+/// 识别 `(unload "path")` / `(reload "path")`，返回 (是否 reload, 路径)。
+fn unload_form_of(v: &Value) -> Option<(bool, String)> {
+    let (items, tail) = list_to_vec(v)?;
+    if items.len() == 2 && tail.is_nil() {
+        if let (Value::Symbol(s), Value::Str(path)) = (&items[0], &items[1]) {
+            match sym_str(*s).as_str() {
+                "unload" => return Some((false, path.borrow().clone())),
+                "reload" => return Some((true, path.borrow().clone())),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// 文件里顶层 define/define-syntax 的名字（解析失败按空表处理）。
+fn file_define_names(path: &str) -> Vec<Sym> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(forms) = reader::read_all_strict(&content) else {
+        return Vec::new();
+    };
+    forms.iter().filter_map(defined_name).collect()
+}
+
+/// load 前快照这些名字的现有绑定（变量/宏两张表，存值克隆）。
+fn snapshot_bindings(env: &Rc<Env>, names: Vec<Sym>) -> LoadRecord {
+    let root = global_root(env);
+    let saved_vars = names
+        .iter()
+        .map(|n| {
+            (
+                *n,
+                root.vars.borrow().get(n).map(|loc| loc.borrow().clone()),
+            )
+        })
+        .collect();
+    let saved_macros = names
+        .iter()
+        .map(|n| (*n, root.macros.borrow().get(n).cloned()))
+        .collect();
+    LoadRecord {
+        names,
+        saved_vars,
+        saved_macros,
+    }
+}
+
+/// 回滚一次 load：删除新绑定、恢复旧绑定，并清掉 (view) 的记录。
+fn unload_file(
+    path: &str,
+    env: &Rc<Env>,
+    loads: &mut HashMap<String, LoadRecord>,
+    defs: &mut Vec<(Sym, String)>,
+) -> Result<usize, String> {
+    let Some(rec) = loads.remove(path) else {
+        return Err(format!("unload: {} 没有加载记录", path));
+    };
+    let root = global_root(env);
+    for (name, old) in rec.saved_vars {
+        match old {
+            Some(v) => {
+                root.vars
+                    .borrow_mut()
+                    .insert(name, Rc::new(RefCell::new(v)));
+            }
+            None => {
+                root.vars.borrow_mut().remove(&name);
+            }
+        }
+    }
+    for (name, old) in rec.saved_macros {
+        match old {
+            Some(t) => {
+                root.macros.borrow_mut().insert(name, t);
+            }
+            None => {
+                root.macros.borrow_mut().remove(&name);
+            }
+        }
+    }
+    let n = rec.names.len();
+    defs.retain(|(d, _)| !rec.names.contains(d));
+    Ok(n)
 }
 
 /// 补全词表：全局环境里的变量与宏（过滤掉宏展开产生的重命名符号，
@@ -252,9 +415,8 @@ pub fn completion_words(env: &Rc<Env>) -> Vec<String> {
         "=>",
     ] {
         let s = crate::value::intern(kw);
-        if is_keyword(s) || true {
-            collect(s);
-        }
+        // 上面的列表含 else/=> 等非 is_keyword 的语法关键字，无条件收集
+        collect(s);
     }
     words.sort();
     words
@@ -388,13 +550,23 @@ fn highlight_token(out: &mut String, tok: &str, env: &Rc<Env>) {
     }
     // reader 会把标识符折叠为小写，查环境前保持一致
     let sym = intern(&tok.to_lowercase());
-    if is_keyword(sym) || env.macros.borrow().contains_key(&sym) {
-        hl_paint(out, "35", tok); // 特殊形式/宏
-    } else if lookup_var(env, sym).is_some() {
-        hl_paint(out, "36", tok); // 已绑定符号（内建过程/用户定义）
-    } else {
-        out.push_str(tok);
+    if is_repl_command(sym) {
+        hl_paint(out, "35", tok); // REPL 层伪指令按特殊形式配色
+        return;
     }
+    // 与求值器同一套解析逻辑（resolve 逐帧先查变量再查宏，最后内建关键字）
+    match resolve(env, sym) {
+        Meaning::Macro(_) | Meaning::Keyword(_) => hl_paint(out, "35", tok), // 特殊形式/宏
+        Meaning::Var(_) => hl_paint(out, "36", tok), // 已绑定符号（内建过程/用户定义）
+        Meaning::Unbound => out.push_str(tok),
+    }
+}
+
+/// REPL 层伪指令（不经求值器）：hint/高亮把它们当作已解析，避免误报。
+const REPL_COMMANDS: &[&str] = &["time", "view", "exit", "unload", "reload"];
+
+fn is_repl_command(s: Sym) -> bool {
+    REPL_COMMANDS.iter().any(|c| sym_str(s) == *c)
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +575,7 @@ fn highlight_token(out: &mut String, tok: &str, env: &Rc<Env>) {
 struct SchemeHelper {
     env: Rc<Env>,
     highlight: bool,
+    hint: bool,
 }
 
 impl Completer for SchemeHelper {
@@ -433,6 +606,48 @@ impl Completer for SchemeHelper {
 
 impl Hinter for SchemeHelper {
     type Hint = String;
+
+    /// 实时错误提示：词法错误 + 顶层未绑定符号。未闭合属正常输入过程，
+    /// 不打扰。光标后灰色文字，不改文本本身。（--no-hint 关闭）
+    fn hint(&self, line: &str, _pos: usize, _ctx: &Context) -> Option<String> {
+        if !self.hint || line.trim().is_empty() {
+            return None;
+        }
+        match reader::read_all_strict(line) {
+            Err(ReadError::Msg(m)) => Some(format!("  read error: {}", m)),
+            Err(ReadError::Eof) => None,
+            Ok(forms) => unbound_hint(&forms, &self.env),
+        }
+    }
+}
+
+/// 顶层裸符号或顶层组合的头符号，如果既不是特殊形式/宏也不是全局变量，
+/// 求值必然报 unbound variable——提前提示。这是精确检查：顶层头位置的
+/// 符号只能在全局环境解析，不涉及局部作用域。不递归进 body（lambda/let
+/// 内部的局部绑定需要完整静态分析，不做）。同一输入里前面 define 的名字
+/// 视为已定义，避免误报。
+fn unbound_hint(forms: &[Value], env: &Rc<Env>) -> Option<String> {
+    let defined_here: Vec<Sym> = forms.iter().filter_map(defined_name).collect();
+    for f in forms {
+        let sym = match f {
+            Value::Symbol(s) => Some(*s),
+            Value::Pair(p) => match &p.borrow().0 {
+                Value::Symbol(s) => Some(*s),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(s) = sym {
+            // REPL 层伪指令（time/view/exit）不经求值器，豁免检查
+            let known = !matches!(resolve(env, s), Meaning::Unbound)
+                || defined_here.contains(&s)
+                || is_repl_command(s);
+            if !known {
+                return Some(format!("  unbound variable: {}", sym_str(s)));
+            }
+        }
+    }
+    None
 }
 impl Highlighter for SchemeHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
@@ -444,6 +659,10 @@ impl Highlighter for SchemeHelper {
     }
     fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
         self.highlight
+    }
+    // 错误提示用暗灰色，与正文区分
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(format!("\x1b[90m{}\x1b[0m", hint))
     }
 }
 impl Validator for SchemeHelper {
@@ -484,13 +703,15 @@ fn catch_internal<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 
 /// 求值一个完整输入里的全部 datum；返回最后一个非 unspecified 的结果。
 /// 出错时打印（红色）并中止本单元剩余 datum，与 Jupyter 单元行为一致。
-/// defs 累积本会话求值成功的顶层 define/define-syntax，供 (view) 使用。
+/// defs 累积本会话求值成功的顶层 define/define-syntax，供 (view) 使用；
+/// loads 记录顶层 load 的绑定快照，供 (unload)/(reload) 回滚。
 fn eval_forms(
     forms: &[Value],
     env: &Rc<Env>,
     colors: Colors,
     n: usize,
     defs: &mut Vec<(Sym, String)>,
+    loads: &mut HashMap<String, LoadRecord>,
 ) {
     if forms.iter().any(is_exit_form) {
         println!("bye~");
@@ -503,20 +724,58 @@ fn eval_forms(
             handle_view(req, defs, env, colors);
             continue;
         }
+        // REPL 层的 (unload "path") / (reload "path")：回滚/重载一次 load
+        if let Some((is_reload, path)) = unload_form_of(f) {
+            if !is_reload {
+                match unload_file(&path, env, loads, defs) {
+                    Ok(n) => println!("; unloaded {} ({} definitions)", path, n),
+                    Err(e) => println!("{}", colors.error(&format!("Error: {}", e))),
+                }
+                continue;
+            }
+            // reload：先回滚旧绑定（没有记录也能直接加载），再走正常 load
+            let _ = unload_file(&path, env, loads, defs);
+            let names = file_define_names(&path);
+            let snap = snapshot_bindings(env, names);
+            let load_form = list_from_vec(vec![
+                Value::sym("load"),
+                Value::Str(Rc::new(RefCell::new(path.clone()))),
+            ]);
+            match catch_internal(|| eval::eval_program(vec![load_form], env)) {
+                Ok(Ok(_)) => {
+                    println!("; reloaded {}", path);
+                    record_file_defs(&path, defs);
+                    loads.insert(path, snap);
+                }
+                Ok(Err(e)) | Err(e) => {
+                    // 即使中途出错也保留快照，之后仍可 unload 回滚部分定义
+                    loads.insert(path, snap);
+                    println!("{}", colors.error(&format!("Error: {}", e)));
+                    return;
+                }
+            }
+            continue;
+        }
         // REPL 层的 (time expr)：只包裹顶层表达式计时，不是求值器的特殊形式
         let (target, timing) = match time_form_of(f) {
             Some(inner) => (inner, true),
             None => (f.clone(), false),
         };
+        // 顶层 load 的绑定快照必须在求值前（旧绑定随后就被覆盖了）
+        let pending =
+            load_path_of(f).map(|p| (p.clone(), snapshot_bindings(env, file_define_names(&p))));
         let t0 = std::time::Instant::now();
         match catch_internal(|| eval::eval_program(vec![target], env)) {
             Ok(Ok(v)) => {
                 if timing {
                     println!("; time: {:.3} ms", t0.elapsed().as_secs_f64() * 1000.0);
                 }
-                // 顶层 load 成功时打印确认；脚本内嵌套 load 不受影响
-                if let Some(path) = load_path_of(f) {
+                // 顶层 load 成功时打印确认；文件里的 define 纳入 (view) 记录，
+                // 绑定快照入 loads 供 unload/reload 回滚
+                if let Some((path, snap)) = pending {
                     println!("; loaded {}", path);
+                    record_file_defs(&path, defs);
+                    loads.insert(path, snap);
                 }
                 // 记录顶层定义（重定义同名则更新），供 (view) 查看
                 if let Some(name) = defined_name(f) {
@@ -529,6 +788,10 @@ fn eval_forms(
                 }
             }
             Ok(Err(e)) | Err(e) => {
+                // load 中途出错：也保留快照，之后可 unload 回滚部分定义
+                if let Some((path, snap)) = pending {
+                    loads.insert(path, snap);
+                }
                 println!("{}", colors.error(&format!("Error: {}", e)));
                 return;
             }
@@ -550,7 +813,7 @@ fn print_banner() {
 // ---------------------------------------------------------------------------
 // 主入口
 
-pub fn run(env: &Rc<Env>, highlight: bool) {
+pub fn run(env: &Rc<Env>, highlight: bool, hint: bool) {
     // panic 会被 catch_internal 降级为普通错误；hook 只留一行位置信息，
     // 替换默认的 "thread 'main' panicked" 长输出（看起来像崩溃）
     std::panic::set_hook(Box::new(|info| {
@@ -562,19 +825,20 @@ pub fn run(env: &Rc<Env>, highlight: bool) {
         }
     }));
     if std::io::stdin().is_terminal() {
-        run_interactive(env, highlight);
+        run_interactive(env, highlight, hint);
     } else {
         // 管道/重定向：无颜色、无行编辑，逐行读取
         run_plain(env);
     }
 }
 
-fn run_interactive(env: &Rc<Env>, highlight: bool) {
+fn run_interactive(env: &Rc<Env>, highlight: bool, hint: bool) {
     let colors = Colors(true);
     print_banner();
     let helper = SchemeHelper {
         env: env.clone(),
         highlight,
+        hint,
     };
     let mut rl = match Editor::new() {
         Ok(mut e) => {
@@ -593,8 +857,9 @@ fn run_interactive(env: &Rc<Env>, highlight: bool) {
 
     let mut n = 1usize;
     let mut defs: Vec<(Sym, String)> = Vec::new(); // 本会话的定义，供 (view)
-                                                   // Validator 保证 readline 返回时输入已是完整 datum（括号未闭合时回车
-                                                   // 在同一缓冲内续行，多行整体编辑、整体进历史）
+    let mut loads: HashMap<String, LoadRecord> = HashMap::new(); // load 快照，供 (unload)/(reload)
+                                                                 // Validator 保证 readline 返回时输入已是完整 datum（括号未闭合时回车
+                                                                 // 在同一缓冲内续行，多行整体编辑、整体进历史）
     loop {
         let prompt = colors.in_prompt(n);
         match rl.readline(&prompt) {
@@ -609,7 +874,7 @@ fn run_interactive(env: &Rc<Env>, highlight: bool) {
                 };
                 match status {
                     InputStatus::Complete(forms) => {
-                        eval_forms(&forms, env, colors, n, &mut defs);
+                        eval_forms(&forms, env, colors, n, &mut defs, &mut loads);
                         n += 1;
                     }
                     // Validator 已拦截这两类，理论上到不了；兜底报告即可
@@ -646,6 +911,7 @@ fn run_plain(env: &Rc<Env>) {
     let mut n = 1usize;
     let mut buffer = String::new();
     let mut defs: Vec<(Sym, String)> = Vec::new(); // 本会话的定义，供 (view)
+    let mut loads: HashMap<String, LoadRecord> = HashMap::new(); // load 快照，供 (unload)/(reload)
     loop {
         if buffer.is_empty() {
             print!("{}", colors.in_prompt(n));
@@ -673,7 +939,7 @@ fn run_plain(env: &Rc<Env>) {
                     }
                     InputStatus::Complete(forms) => {
                         buffer.clear();
-                        eval_forms(&forms, env, colors, n, &mut defs);
+                        eval_forms(&forms, env, colors, n, &mut defs, &mut loads);
                         n += 1;
                     }
                 }
@@ -795,6 +1061,55 @@ mod tests {
             validate_input("(a . )"),
             ValidationResult::Invalid(_)
         ));
+    }
+
+    #[test]
+    fn unbound_symbol_hint() {
+        let env = standard_env();
+        let read = |s: &str| reader::read_all_strict(s).unwrap();
+        // 顶层裸符号未绑定 → 提示
+        assert_eq!(
+            unbound_hint(&read("(+ 1 2) fdfd"), &env).as_deref(),
+            Some("  unbound variable: fdfd")
+        );
+        // 顶层组合头未绑定 → 提示
+        assert_eq!(
+            unbound_hint(&read("(nosuch 1 2)"), &env).as_deref(),
+            Some("  unbound variable: nosuch")
+        );
+        // 已绑定 / 关键字 / 宏 不提示
+        assert!(unbound_hint(&read("(car '(1)) car define"), &env).is_none());
+        // 同一输入里先 define 后使用，不误报
+        assert!(unbound_hint(&read("(define (f x) x) (f 1)"), &env).is_none());
+        // quote 的头是 quote（关键字），不误报
+        assert!(unbound_hint(&read("'fdfd"), &env).is_none());
+        // REPL 层伪指令（view/time/exit）不误报
+        assert!(unbound_hint(&read("(view) (time (+ 1 2)) (exit)"), &env).is_none());
+    }
+
+    #[test]
+    fn unload_snapshot_rollback() {
+        let env = standard_env();
+        let mut loads = HashMap::new();
+        let mut defs = Vec::new();
+        let eval = |s: &str| {
+            crate::eval::eval_str(s, &env)
+                .map(|v| write_to_string(&v))
+                .unwrap_or_else(|e| format!("ERROR: {}", e))
+        };
+        eval("(define (f x) (* x 2)) (define g 1)");
+        // 模拟 load 前的快照（h 此时未定义）
+        let names = vec![intern("f"), intern("g"), intern("h")];
+        loads.insert("m".to_string(), snapshot_bindings(&env, names));
+        // 模拟 load：重定义 f、g，新定义 h
+        eval("(define (f x) (* x 3)) (define g 2) (define h 5)");
+        assert_eq!(eval("(list (f 10) g h)"), "(30 2 5)");
+        // unload：f、g 恢复旧值，h 被移除
+        assert_eq!(unload_file("m", &env, &mut loads, &mut defs), Ok(3));
+        assert_eq!(eval("(list (f 10) g)"), "(20 1)");
+        assert!(eval("h").starts_with("ERROR: unbound variable"));
+        // 重复 unload 报错
+        assert!(unload_file("m", &env, &mut loads, &mut defs).is_err());
     }
 
     #[test]

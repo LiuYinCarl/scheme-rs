@@ -246,6 +246,7 @@ pub const PRIMITIVES: &[&str] = &[
     "pretty-print",
     "trace",
     "untrace",
+    "require",
 ];
 
 pub fn standard_env() -> Rc<Env> {
@@ -266,18 +267,19 @@ pub fn standard_env() -> Rc<Env> {
         }
     }
     GLOBAL_ENV.with(|g| *g.borrow_mut() = Some(env.clone()));
-    // 扩展 prelude：SRFI-1 常用子集（纯 Scheme，见 docs/extensions.md）。
-    // 只新增 R5RS 之外的名字，不影响符合性套件。
-    let forms = reader::read_all_strict(PRELUDE).expect("prelude: parse failed");
-    crate::eval::eval_program(forms, &env).expect("prelude: eval failed");
     env
 }
 
 // ---------------------------------------------------------------------------
 // Argument helpers
 
-/// 扩展 prelude（SRFI-1 常用子集），standard_env 启动时加载。
-const PRELUDE: &str = include_str!("prelude.scm");
+/// 扩展模块库（纯 Scheme，include_str! 内嵌）：
+/// 用户 `(require '名字)` 主动加载，不加载就不占用全局环境里的名字，
+/// 避免与用户自定义函数冲突。见 docs/extensions.md。
+const MODULES: &[(&str, &str)] = &[
+    ("list", include_str!("libs/list.scm")),
+    ("string", include_str!("libs/string.scm")),
+];
 
 fn arity(name: &str, args: &[Value], n: usize) -> Result<(), String> {
     if args.len() != n {
@@ -1062,12 +1064,13 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
         }
         "dynamic-wind" => {
             arity(name, &args, 3)?;
+            let before = crate::eval::WindHook::Thunk(args[0].clone());
             m.push(ContKind::DynWindBefore {
-                before: args[0].clone(),
+                before: before.clone(),
                 thunk: args[1].clone(),
-                after: args[2].clone(),
+                after: crate::eval::WindHook::Thunk(args[2].clone()),
             });
-            Ok(State::Apply(args[0].clone(), vec![]))
+            Ok(crate::eval::apply_hook(&before))
         }
         "eval" => {
             arity(name, &args, 2)?;
@@ -1078,7 +1081,13 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             let v = crate::eval::run(State::Eval(args[0].clone(), env))?;
             ret(v)
         }
-        "scheme-report-environment" | "null-environment" | "interaction-environment" => {
+        "scheme-report-environment" | "null-environment" => {
+            // R5RS 要求带版本号参数；返回完整交互环境是文档已承认的偏差
+            arity(name, &args, 1)?;
+            ret(Value::Env(global_env()))
+        }
+        "interaction-environment" => {
+            arity(name, &args, 0)?;
             ret(Value::Env(global_env()))
         }
 
@@ -1119,6 +1128,9 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             } else {
                 want_port_in(name, &args[0])?
             };
+            if p.is_closed() {
+                return Err("read: port is closed".into());
+            }
             let mut src = PortSource(p);
             match reader::read_datum(&mut src) {
                 Ok(v) => ret(v),
@@ -1132,6 +1144,9 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             } else {
                 want_port_in(name, &args[0])?
             };
+            if p.is_closed() {
+                return Err("read-char: port is closed".into());
+            }
             match p.read_char() {
                 Some(c) => ret(Value::Char(c)),
                 None => ret(Value::Eof),
@@ -1143,6 +1158,9 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             } else {
                 want_port_in(name, &args[0])?
             };
+            if p.is_closed() {
+                return Err("peek-char: port is closed".into());
+            }
             match p.peek_char() {
                 Some(c) => ret(Value::Char(c)),
                 None => ret(Value::Eof),
@@ -1205,8 +1223,8 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             let path = s.borrow().clone();
             let content =
                 std::fs::read_to_string(&path).map_err(|e| format!("load: {}: {}", path, e))?;
-            let forms = reader::read_all(&content).map_err(|e| match e {
-                reader::ReadError::Eof => "load: unexpected eof".to_string(),
+            let forms = reader::read_all_strict(&content).map_err(|e| match e {
+                reader::ReadError::Eof => "load: unexpected end of input".to_string(),
                 reader::ReadError::Msg(m) => format!("load: {}", m),
             })?;
             if forms.is_empty() {
@@ -1237,18 +1255,28 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             arity(name, &args, 2)?;
             let s = want_str(name, &args[0])?;
             let path = s.borrow().clone();
-            let saved_in = port::current_input();
-            let saved_out = port::current_output();
-            if name == "with-input-from-file" {
-                port::set_current_input(Port::open_input_file(&path)?);
+            let is_input = name == "with-input-from-file";
+            let new_port = if is_input {
+                Port::open_input_file(&path)?
             } else {
-                port::set_current_output(Port::open_output_file(&path)?);
-            }
-            m.push(ContKind::RestorePorts {
-                saved_in,
-                saved_out,
+                Port::open_output_file(&path)?
+            };
+            // 端口切换挂在 dynamic-wind 机制上：before 保存并切换端口，
+            // after 恢复并关闭（close 内含 flush）。正常返回、call/cc
+            // 逃逸、重入三种情况都会以正确时机执行 before/after——不像
+            // 普通续延帧那样在逃逸时被丢弃而泄漏端口状态。
+            let switch = Rc::new(crate::eval::PortSwitch {
+                is_input,
+                new_port,
+                saved: RefCell::new(None),
             });
-            Ok(State::Apply(args[1].clone(), vec![]))
+            let before = crate::eval::WindHook::PortEnter(switch.clone());
+            m.push(ContKind::DynWindBefore {
+                before: before.clone(),
+                thunk: args[1].clone(),
+                after: crate::eval::WindHook::PortLeave(switch),
+            });
+            Ok(crate::eval::apply_hook(&before))
         }
         "open-input-string" => {
             arity(name, &args, 1)?;
@@ -1378,6 +1406,41 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             };
             p.write_str(&crate::printer::pretty_to_string(&args[0]))?;
             ret(Value::Unspecified)
+        }
+        // (require '名字)：加载内嵌扩展模块到全局环境（见 docs/extensions.md）
+        "require" => {
+            arity(name, &args, 1)?;
+            let module = match &args[0] {
+                Value::Symbol(s) => sym_str(*s),
+                _ => {
+                    return Err(format!(
+                        "require: not a symbol: {} (用法: (require 'list))",
+                        write_to_string(&args[0])
+                    ))
+                }
+            };
+            let src = match MODULES.iter().find(|(n, _)| *n == module) {
+                Some((_, src)) => src,
+                None => {
+                    let available: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+                    return Err(format!(
+                        "require: unknown module: {} (可用: {})",
+                        module,
+                        available.join(" ")
+                    ));
+                }
+            };
+            let mut forms = reader::read_all_strict(src).map_err(|e| match e {
+                reader::ReadError::Eof => format!("require: {}: unexpected eof", module),
+                reader::ReadError::Msg(m) => format!("require: {}: {}", module, m),
+            })?;
+            let env = global_env();
+            let first = forms.remove(0);
+            m.push(ContKind::Load {
+                rest: forms,
+                env: env.clone(),
+            });
+            Ok(State::Eval(first, env))
         }
         // trace/untrace 接受符号（在全局环境解析，并用作展示名）或过程对象
         "trace" | "untrace" => {

@@ -583,17 +583,67 @@ fn ext_files() {
 }
 
 #[test]
-fn ext_prelude_srfi1() {
-    assert_eq!(one("(iota 5)"), "(0 1 2 3 4)");
-    assert_eq!(one("(iota 3 10 2)"), "(10 12 14)");
-    assert_eq!(one("(filter odd? '(1 2 3 4 5))"), "(1 3 5)");
-    assert_eq!(one("(fold + 0 '(1 2 3 4))"), "10");
-    assert_eq!(one("(fold cons '() '(1 2 3))"), "(3 2 1)");
-    assert_eq!(one("(fold-right cons '() '(1 2 3))"), "(1 2 3)");
-    assert_eq!(one("(last '(a b c))"), "c");
-    assert_eq!(one("(take '(1 2 3 4) 2)"), "(1 2)");
-    assert_eq!(one("(drop '(1 2 3 4) 2)"), "(3 4)");
-    assert_eq!(one("(delete-duplicates '(1 2 1 3 2))"), "(1 3 2)");
+fn ext_require_modules() {
+    // 不 require 时这些名字不存在（不与用户自定义冲突）
+    assert!(one("(filter odd? '(1 2 3))").starts_with("ERROR: unbound variable"));
+    assert!(one("(sort '(1) <)").starts_with("ERROR: unbound variable"));
+
+    // list 模块
+    let with_list = |expr: &str| one(&format!("(begin (require 'list) {})", expr));
+    assert_eq!(with_list("(iota 5)"), "(0 1 2 3 4)");
+    assert_eq!(with_list("(iota 3 10 2)"), "(10 12 14)");
+    assert_eq!(with_list("(filter odd? '(1 2 3 4 5))"), "(1 3 5)");
+    assert_eq!(with_list("(fold + 0 '(1 2 3 4))"), "10");
+    assert_eq!(with_list("(fold cons '() '(1 2 3))"), "(3 2 1)");
+    assert_eq!(with_list("(fold-right cons '() '(1 2 3))"), "(1 2 3)");
+    assert_eq!(with_list("(reduce + 0 '(1 2 3 4))"), "10");
+    assert_eq!(with_list("(reduce + 99 '())"), "99");
+    assert_eq!(with_list("(last '(a b c))"), "c");
+    assert_eq!(with_list("(take '(1 2 3 4) 2)"), "(1 2)");
+    assert_eq!(with_list("(drop '(1 2 3 4) 2)"), "(3 4)");
+    assert_eq!(with_list("(take-while odd? '(1 3 2 5))"), "(1 3)");
+    assert_eq!(with_list("(drop-while odd? '(1 3 2 5))"), "(2 5)");
+    assert_eq!(with_list("(find even? '(1 3 4 5))"), "4");
+    assert_eq!(with_list("(find even? '(1 3 5))"), "#f");
+    assert_eq!(with_list("(any even? '(1 3 4))"), "#t");
+    assert_eq!(with_list("(every odd? '(1 3 4))"), "#f");
+    assert_eq!(with_list("(zip '(a b) '(1 2))"), "((a 1) (b 2))");
+    assert_eq!(with_list("(partition odd? '(1 2 3 4))"), "((1 3) (2 4))");
+    assert_eq!(with_list("(delete-duplicates '(1 2 1 3 2))"), "(1 3 2)");
+    assert_eq!(with_list("(sort '(3 1 2) <)"), "(1 2 3)");
+    assert_eq!(with_list("(sort '(3 1 2) >)"), "(3 2 1)");
+    // 稳定性：相等元素保持原顺序（用 car 比较 pair）
+    assert_eq!(
+        with_list("(sort '((2 . b) (1 . a) (2 . c)) (lambda (x y) (< (car x) (car y))))"),
+        "((1 . a) (2 . b) (2 . c))"
+    );
+
+    // string 模块
+    let with_str = |expr: &str| one(&format!("(begin (require 'string) {})", expr));
+    assert_eq!(with_str("(string-reverse \"abc\")"), "\"cba\"");
+    assert_eq!(with_str("(string-repeat \"ab\" 3)"), "\"ababab\"");
+    assert_eq!(with_str("(string-trim \"  hi \t\")"), "\"hi\"");
+    assert_eq!(with_str("(string-prefix? \"he\" \"hello\")"), "#t");
+    assert_eq!(with_str("(string-suffix? \"lo\" \"hello\")"), "#t");
+    assert_eq!(with_str("(string-contains? \"hello\" \"ll\")"), "2");
+    assert_eq!(with_str("(string-contains? \"hello\" \"zz\")"), "#f");
+    assert_eq!(
+        with_str("(string-split \"a,b,,c\" #\\,)"),
+        "(\"a\" \"b\" \"\" \"c\")"
+    );
+    assert_eq!(with_str("(string-join '(\"a\" \"b\") \"-\")"), "\"a-b\"");
+    assert_eq!(
+        with_str("(string-replace \"a-b-c\" \"-\" \"+\")"),
+        "\"a+b+c\""
+    );
+    assert_eq!(with_str("(string-replace \"aaaa\" \"aa\" \"b\")"), "\"bb\"");
+
+    // 未知模块报错并列出可用模块
+    let err = one("(require 'nosuch)");
+    assert!(err.contains("unknown module: nosuch"), "got: {}", err);
+    assert!(err.contains("list"), "got: {}", err);
+    // 参数必须是符号
+    assert!(one("(require \"list\")").starts_with("ERROR:"));
 }
 
 #[test]
@@ -645,4 +695,208 @@ fn bad_binding_error_names_the_binding() {
     assert!(one("(let (x) 1)").contains("bad binding: x"));
     // 绑定名不是标识符
     assert!(one("(let ((1 2)) 3)").contains("binding name must be identifier: 1"));
+}
+
+// ---------------------------------------------------------------------------
+// 回归：正确性 bug 修复
+
+#[test]
+fn expt_huge_exponent_errors() {
+    // 超范围的指数报错，而不是被钳位后溢出成 -1
+    assert_eq!(
+        one("(expt 2 4294967296)"),
+        "ERROR: expt: exponent too large"
+    );
+    // 正常行为不受影响
+    assert_eq!(one("(expt 2 -3)"), "1/8");
+    assert_eq!(one("(expt 2 10)"), "1024");
+    assert_eq!(one("(expt 2 0)"), "1");
+}
+
+#[test]
+fn nan_compares_false() {
+    // IEEE 语义：NaN 参与的所有比较均为 #f
+    assert_eq!(one("(= +nan.0 +nan.0)"), "#f");
+    assert_eq!(one("(< +nan.0 1)"), "#f");
+    assert_eq!(one("(> +nan.0 +nan.0)"), "#f");
+    assert_eq!(one("(<= +nan.0 1)"), "#f");
+    assert_eq!(one("(>= 1 +nan.0)"), "#f");
+}
+
+#[test]
+fn exact_prefix_on_inf_nan_rejected() {
+    // R5RS：无穷/NaN 没有精确表示
+    assert!(one("#e+inf.0").starts_with("ERROR: bad number"));
+    assert!(one("#e-nan.0").starts_with("ERROR: bad number"));
+    assert_eq!(one("(string->number \"#e+inf.0\")"), "#f");
+    // 不带 #e（或带 #i）行为不变
+    assert_eq!(one("+inf.0"), "+inf.0");
+    assert_eq!(one("#i+inf.0"), "+inf.0");
+    assert_eq!(one("+nan.0"), "+nan.0");
+}
+
+#[test]
+fn load_unbalanced_parens_errors() {
+    // 括号不平衡的文件必须报错，而不是静默丢弃末尾 datum。
+    // 用进程号保证文件名唯一（测试并行），写在 target/tmp/ 下。
+    let path = format!("target/tmp/load_unbalanced_{}.scm", std::process::id());
+    let src = format!(
+        "(begin (with-output-to-file \"{}\" (lambda () (display \"(define x (list 1 2)\"))) (load \"{}\"))",
+        path, path
+    );
+    assert_eq!(one(&src), "ERROR: load: unexpected end of input");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn environment_specifiers_check_arity() {
+    assert_eq!(
+        one("(null-environment)"),
+        "ERROR: null-environment: expected 1 args, got 0"
+    );
+    assert_eq!(
+        one("(scheme-report-environment 5 6)"),
+        "ERROR: scheme-report-environment: expected 1 args, got 2"
+    );
+    // 行为不变：返回完整交互环境（文档已承认的偏差）
+    assert_eq!(one("(null-environment 5)"), "#<environment>");
+    assert_eq!(
+        one("(interaction-environment 1)"),
+        "ERROR: interaction-environment: expected 0 args, got 1"
+    );
+    assert_eq!(one("(interaction-environment)"), "#<environment>");
+}
+
+#[test]
+fn unspecified_is_self_eq() {
+    assert_eq!(one("(let ((x (if #f #f))) (eq? x x))"), "#t");
+}
+
+#[test]
+fn bar_is_symbol_char_not_delimiter() {
+    // R5RS 没有 |...| 语法，| 是普通符号字符
+    assert_eq!(one("'|foo|"), "|foo|");
+}
+
+#[test]
+fn closed_port_read_errors() {
+    assert_eq!(
+        one("(let ((p (open-input-string \"x\"))) (close-input-port p) (read-char p))"),
+        "ERROR: read-char: port is closed"
+    );
+    assert_eq!(
+        one("(let ((p (open-input-string \"x\"))) (close-input-port p) (peek-char p))"),
+        "ERROR: peek-char: port is closed"
+    );
+    assert_eq!(
+        one("(let ((p (open-input-string \"x\"))) (close-input-port p) (read p))"),
+        "ERROR: read: port is closed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 回归：结构性修复
+
+#[test]
+fn macro_template_quote_respects_def_env() {
+    // 模板里的 (quote x) 是否按 quotation 处理，取决于 quote 在宏定义
+    // 环境中的解析：仍是内建关键字 → 数据；被重绑定为变量 → 普通组合。
+    let r = run(&[
+        "(define-syntax mq (syntax-rules () ((_ x) (quote x))))",
+        "(mq a)",
+        "(define quote list)",
+        "(mq 1)",
+    ]);
+    assert_eq!(r[1], "a"); // quote 未重绑定：quotation
+    assert_eq!(r[3], "(1)"); // quote 重绑定为 list：(list 1)
+}
+
+#[test]
+fn var_macro_namespaces_last_definer_wins() {
+    // 变量/宏两个命名空间同帧互斥，后定义者生效
+    let r = run(&[
+        "(define-syntax ns-a (syntax-rules () ((_) 'macro)))",
+        "(ns-a)",
+        "(define ns-a 'var)",
+        "ns-a",
+        "(ns-a)",
+    ]);
+    assert_eq!(r[1], "macro");
+    assert_eq!(r[3], "var"); // define 清掉了同帧同名宏
+    assert!(r[4].starts_with("ERROR: not a procedure")); // ns-a 已是普通变量
+    let r = run(&[
+        "(define ns-b 'var)",
+        "ns-b",
+        "(define-syntax ns-b (syntax-rules () ((_) 'macro)))",
+        "(ns-b)",
+        "ns-b",
+    ]);
+    assert_eq!(r[1], "var");
+    assert_eq!(r[3], "macro"); // define-syntax 清掉了同帧同名变量
+    assert!(r[4].starts_with("ERROR: unbound variable")); // 变量绑定已移除
+}
+
+#[test]
+fn with_ports_dynamic_wind_normal_escape_reentry() {
+    // 端口切换挂在 dynamic-wind 上：正常返回/call/cc 逃逸/重入都要以
+    // 正确时机恢复端口；after 里 close（含 flush），写文件不丢数据。
+    let out_a = format!("target/tmp/withdw-a-{}.txt", std::process::id());
+    let out_b = format!("target/tmp/withdw-b-{}.txt", std::process::id());
+    let out_c = format!("target/tmp/withdw-c-{}.txt", std::process::id());
+    // 正常返回：内容落盘，当前输出端口恢复
+    let r = run(&[
+        "(define dw-p (current-output-port))",
+        &format!(
+            "(with-output-to-file \"{}\" (lambda () (display \"abc\")))",
+            out_a
+        ),
+        "(eq? dw-p (current-output-port))",
+        &format!("(call-with-input-file \"{}\" (lambda (p) (read p)))", out_a),
+    ]);
+    assert_eq!(r[2], "#t");
+    assert_eq!(r[3], "abc");
+    // call/cc 逃逸：after 仍执行——端口恢复，逃逸前写的内容 flush 落盘
+    let r = run(&[
+        "(define dw-p (current-output-port))",
+        &format!(
+            "(call/cc (lambda (c) (with-output-to-file \"{}\" (lambda () (display \"esc\") (c #f)))))",
+            out_b
+        ),
+        "(eq? dw-p (current-output-port))",
+        &format!("(call-with-input-file \"{}\" (lambda (p) (read p)))", out_b),
+    ]);
+    assert_eq!(r[2], "#t");
+    assert_eq!(r[3], "esc");
+    // 重入被捕获的续延：before/after 再次执行，外层端口保持正确
+    let r = run(&[
+        "(define dw-p (current-output-port))",
+        "(define dw-k #f)",
+        &format!(
+            "(with-output-to-file \"{}\" (lambda () (call/cc (lambda (c) (set! dw-k c)))))",
+            out_c
+        ),
+        "(eq? dw-p (current-output-port))",
+        "(dw-k 'reentered)",
+        "(eq? dw-p (current-output-port))",
+    ]);
+    assert_eq!(r[3], "#t");
+    assert_eq!(r[4], "reentered");
+    assert_eq!(r[5], "#t");
+    // with-input-from-file 逃逸同样恢复
+    let r = run(&[
+        &format!(
+            "(call-with-output-file \"{}\" (lambda (p) (display \"in-data\" p)))",
+            out_a
+        ),
+        "(define dw-ip (current-input-port))",
+        &format!(
+            "(call/cc (lambda (c) (with-input-from-file \"{}\" (lambda () (c #f)))))",
+            out_a
+        ),
+        "(eq? dw-ip (current-input-port))",
+    ]);
+    assert_eq!(r[3], "#t");
+    let _ = std::fs::remove_file(&out_a);
+    let _ = std::fs::remove_file(&out_b);
+    let _ = std::fs::remove_file(&out_c);
 }

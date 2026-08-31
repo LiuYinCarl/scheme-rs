@@ -15,7 +15,7 @@
 
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -86,6 +86,8 @@ pub fn get_rename(s: Sym) -> Option<(Sym, Rc<Env>)> {
 
 /// Human-readable name for error messages: follows the rename chain back to
 /// the original identifier (renames come from hygienic macro expansion).
+/// 纯显示用途：链异常长时（上限同 env.rs 的 MAX_RENAME_CHAIN）就截断显示
+/// 当前名字，不报错——语义判定请走 aux_name，那里触顶会显式报错。
 pub fn display_name(s: Sym) -> String {
     let mut cur = s;
     for _ in 0..1000 {
@@ -130,10 +132,35 @@ impl Drop for Pair {
 }
 
 pub struct Closure {
+    /// 稳定标识：创建时从全局递增计数器分配，终身不变。
+    /// trace 等功能用它做 key——不能用 Rc 指针，闭包释放后地址会被
+    /// 新闭包复用，残留登记会误伤不相干的闭包。
+    pub id: usize,
     pub fixed: Vec<Sym>,
     pub rest: Option<Sym>,
     pub body: Rc<Vec<Value>>,
     pub env: Rc<Env>,
+}
+
+thread_local! {
+    static CLOSURE_ID: Cell<usize> = const { Cell::new(0) };
+}
+
+impl Closure {
+    pub fn new(fixed: Vec<Sym>, rest: Option<Sym>, body: Rc<Vec<Value>>, env: Rc<Env>) -> Closure {
+        let id = CLOSURE_ID.with(|c| {
+            let id = c.get();
+            c.set(id + 1);
+            id
+        });
+        Closure {
+            id,
+            fixed,
+            rest,
+            body,
+            env,
+        }
+    }
 }
 
 pub struct Promise {
@@ -269,6 +296,7 @@ pub fn scm_eq(a: &Value, b: &Value) -> bool {
         (Continuation(x), Continuation(y)) => Rc::ptr_eq(x, y),
         (Port(x), Port(y)) => Rc::ptr_eq(x, y),
         (Eof, Eof) => true,
+        (Unspecified, Unspecified) => true,
         (Promise(x), Promise(y)) => Rc::ptr_eq(x, y),
         (Env(x), Env(y)) => Rc::ptr_eq(x, y),
         _ => false,
