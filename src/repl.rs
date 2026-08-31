@@ -1,8 +1,9 @@
 //! Jupyter 风格的交互式 REPL。
 //!
-//! 特性：`In [n]:` / `Out[n]:` 计数提示符、括号未配平时的续行模式、
-//! ANSI 颜色（非 TTY 自动关闭）、语法高亮（注释/字符串/数字/特殊形式/
-//! 已绑定符号，默认开启，`--no-highlight` 关闭）、rustyline 提供的
+//! 特性：`In [n]:` / `Out[n]:` 计数提示符、多行编辑（Validator 判定输入
+//! 完整性，括号未闭合时回车在同一缓冲内续行，可跨行修改，历史按整个输入
+//! 召回）、ANSI 颜色（非 TTY 自动关闭）、语法高亮（注释/字符串/数字/特殊
+//! 形式/已绑定符号，默认开启，`--no-highlight` 关闭）、rustyline 提供的
 //! Tab 补全（内建过程 + 全局环境中用户 define 的符号 + 特殊形式，动态
 //! 读取）、历史记录持久化、Ctrl-C 丢弃当前输入不退出、Ctrl-D / `(exit)`
 //! 退出。
@@ -18,7 +19,7 @@ use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context, Editor, Helper};
 
 use crate::env::{is_keyword, lookup_var, Env};
@@ -46,6 +47,20 @@ pub fn check_input(src: &str) -> InputStatus {
         Ok(forms) => InputStatus::Complete(forms),
         Err(ReadError::Eof) => InputStatus::Incomplete,
         Err(ReadError::Msg(m)) => InputStatus::Error(m),
+    }
+}
+
+/// rustyline Validator 的判定逻辑：只有完整输入才放行；括号未闭合时回车
+/// 在同一缓冲内续行（多行编辑，可跨行修改，历史按整个输入召回）；
+/// 词法错误提示但不放行，可直接继续编辑修正（Ctrl-C 丢弃）。
+fn validate_input(src: &str) -> ValidationResult {
+    if src.trim().is_empty() {
+        return ValidationResult::Valid(None);
+    }
+    match reader::read_all_strict(src) {
+        Ok(_) => ValidationResult::Valid(None),
+        Err(ReadError::Eof) => ValidationResult::Incomplete,
+        Err(ReadError::Msg(m)) => ValidationResult::Invalid(Some(format!("read error: {}", m))),
     }
 }
 
@@ -83,6 +98,111 @@ fn time_form_of(v: &Value) -> Option<Value> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// (view ...)：REPL 层的代码查看指令（高亮打印，不求值）
+
+/// view 的三种目标：全部定义 / 文件 / 单个定义。
+pub enum ViewReq {
+    All,
+    File(String),
+    Name(Sym),
+}
+
+/// 识别 `(view)` / `(view "path")` / `(view 'name)`。
+fn view_form_of(v: &Value) -> Option<ViewReq> {
+    let (items, tail) = list_to_vec(v)?;
+    if !tail.is_nil() {
+        return None;
+    }
+    match &items.first() {
+        Some(Value::Symbol(s)) if sym_str(*s) == "view" => {}
+        _ => return None,
+    }
+    match items.len() {
+        1 => Some(ViewReq::All),
+        2 => match &items[1] {
+            Value::Str(path) => Some(ViewReq::File(path.borrow().clone())),
+            // (view 'name)
+            Value::Pair(_) => {
+                let (q, qtail) = list_to_vec(&items[1])?;
+                if q.len() == 2 && qtail.is_nil() {
+                    if let (Value::Symbol(qm), Value::Symbol(name)) = (&q[0], &q[1]) {
+                        if sym_str(*qm) == "quote" {
+                            return Some(ViewReq::Name(*name));
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 提取顶层 define/define-syntax 定义的名字。
+fn defined_name(f: &Value) -> Option<Sym> {
+    let (items, tail) = list_to_vec(f)?;
+    if items.len() < 2 || !tail.is_nil() {
+        return None;
+    }
+    match &items[0] {
+        Value::Symbol(s) if matches!(sym_str(*s).as_str(), "define" | "define-syntax") => {}
+        _ => return None,
+    }
+    match &items[1] {
+        // (define name ...)
+        Value::Symbol(s) => Some(*s),
+        // (define (name args...) ...)
+        Value::Pair(p) => match &p.borrow().0 {
+            Value::Symbol(s) => Some(*s),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 高亮打印一段源码；非 TTY 原样输出。
+fn print_highlighted(src: &str, env: &Rc<Env>, colors: Colors) {
+    for line in src.lines() {
+        if colors.0 {
+            println!("{}", highlight_line(line, env));
+        } else {
+            println!("{}", line);
+        }
+    }
+}
+
+/// 执行 (view ...)。defs 是本会话求值成功的顶层定义（名字, pretty-print 文本）。
+fn handle_view(req: ViewReq, defs: &[(Sym, String)], env: &Rc<Env>, colors: Colors) {
+    match req {
+        ViewReq::File(path) => match std::fs::read_to_string(&path) {
+            Ok(content) => print_highlighted(content.trim_end(), env, colors),
+            Err(e) => println!("{}", colors.error(&format!("Error: view: {}: {}", path, e))),
+        },
+        ViewReq::All => {
+            if defs.is_empty() {
+                println!("; no definitions yet");
+            }
+            for (_, src) in defs {
+                print_highlighted(src, env, colors);
+            }
+        }
+        ViewReq::Name(name) => {
+            let mut found = false;
+            for (n2, src) in defs {
+                if *n2 == name {
+                    print_highlighted(src, env, colors);
+                    found = true;
+                }
+            }
+            if !found {
+                println!("; no definition for {}", sym_str(name));
+            }
+        }
+    }
 }
 
 /// 补全词表：全局环境里的变量与宏（过滤掉宏展开产生的重命名符号，
@@ -326,7 +446,11 @@ impl Highlighter for SchemeHelper {
         self.highlight
     }
 }
-impl Validator for SchemeHelper {}
+impl Validator for SchemeHelper {
+    fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+        Ok(validate_input(ctx.input()))
+    }
+}
 impl Helper for SchemeHelper {}
 
 fn history_file() -> Option<PathBuf> {
@@ -360,13 +484,25 @@ fn catch_internal<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 
 /// 求值一个完整输入里的全部 datum；返回最后一个非 unspecified 的结果。
 /// 出错时打印（红色）并中止本单元剩余 datum，与 Jupyter 单元行为一致。
-fn eval_forms(forms: &[Value], env: &Rc<Env>, colors: Colors, n: usize) {
+/// defs 累积本会话求值成功的顶层 define/define-syntax，供 (view) 使用。
+fn eval_forms(
+    forms: &[Value],
+    env: &Rc<Env>,
+    colors: Colors,
+    n: usize,
+    defs: &mut Vec<(Sym, String)>,
+) {
     if forms.iter().any(is_exit_form) {
         println!("bye~");
         std::process::exit(0);
     }
     let mut last: Option<Value> = None;
     for f in forms {
+        // REPL 层的 (view ...)：高亮查看代码，不求值
+        if let Some(req) = view_form_of(f) {
+            handle_view(req, defs, env, colors);
+            continue;
+        }
         // REPL 层的 (time expr)：只包裹顶层表达式计时，不是求值器的特殊形式
         let (target, timing) = match time_form_of(f) {
             Some(inner) => (inner, true),
@@ -381,6 +517,12 @@ fn eval_forms(forms: &[Value], env: &Rc<Env>, colors: Colors, n: usize) {
                 // 顶层 load 成功时打印确认；脚本内嵌套 load 不受影响
                 if let Some(path) = load_path_of(f) {
                     println!("; loaded {}", path);
+                }
+                // 记录顶层定义（重定义同名则更新），供 (view) 查看
+                if let Some(name) = defined_name(f) {
+                    let src = crate::printer::pretty_to_string(f);
+                    defs.retain(|(n2, _)| *n2 != name);
+                    defs.push((name, src));
                 }
                 if !matches!(v, Value::Unspecified) {
                     last = Some(v);
@@ -450,45 +592,37 @@ fn run_interactive(env: &Rc<Env>, highlight: bool) {
     }
 
     let mut n = 1usize;
-    let mut buffer = String::new();
-    let mut cont = false; // 是否处于续行模式
+    let mut defs: Vec<(Sym, String)> = Vec::new(); // 本会话的定义，供 (view)
+                                                   // Validator 保证 readline 返回时输入已是完整 datum（括号未闭合时回车
+                                                   // 在同一缓冲内续行，多行整体编辑、整体进历史）
     loop {
-        let prompt = if cont {
-            colors.cont_prompt(n)
-        } else {
-            colors.in_prompt(n)
-        };
+        let prompt = colors.in_prompt(n);
         match rl.readline(&prompt) {
             Ok(line) => {
-                if line.trim().is_empty() && !cont {
+                if line.trim().is_empty() {
                     continue;
                 }
                 let _ = rl.add_history_entry(line.as_str());
-                buffer.push_str(&line);
-                buffer.push('\n');
-                let status = match catch_internal(|| check_input(&buffer)) {
+                let status = match catch_internal(|| check_input(&line)) {
                     Ok(s) => s,
                     Err(e) => InputStatus::Error(e),
                 };
                 match status {
-                    InputStatus::Incomplete => cont = true,
+                    InputStatus::Complete(forms) => {
+                        eval_forms(&forms, env, colors, n, &mut defs);
+                        n += 1;
+                    }
+                    // Validator 已拦截这两类，理论上到不了；兜底报告即可
+                    InputStatus::Incomplete => {
+                        println!("{}", colors.error("Read error: unexpected eof"));
+                    }
                     InputStatus::Error(m) => {
                         println!("{}", colors.error(&format!("Read error: {}", m)));
-                        buffer.clear();
-                        cont = false;
-                    }
-                    InputStatus::Complete(forms) => {
-                        buffer.clear();
-                        cont = false;
-                        eval_forms(&forms, env, colors, n);
-                        n += 1;
                     }
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C：丢弃当前输入（含续行缓冲），不退出
-                buffer.clear();
-                cont = false;
+                // Ctrl-C：丢弃当前输入，不退出
                 println!("^C");
                 continue;
             }
@@ -511,6 +645,7 @@ fn run_plain(env: &Rc<Env>) {
     let stdin = std::io::stdin();
     let mut n = 1usize;
     let mut buffer = String::new();
+    let mut defs: Vec<(Sym, String)> = Vec::new(); // 本会话的定义，供 (view)
     loop {
         if buffer.is_empty() {
             print!("{}", colors.in_prompt(n));
@@ -538,7 +673,7 @@ fn run_plain(env: &Rc<Env>) {
                     }
                     InputStatus::Complete(forms) => {
                         buffer.clear();
-                        eval_forms(&forms, env, colors, n);
+                        eval_forms(&forms, env, colors, n, &mut defs);
                         n += 1;
                     }
                 }
@@ -629,6 +764,66 @@ mod tests {
         assert!(s.contains("\x1b[33m#t\x1b[0m")); // 布尔黄
         assert!(s.contains("\x1b[33m#\\a\x1b[0m")); // 字符黄
         assert!(s.contains("\x1b[90m; tail\x1b[0m")); // 注释灰
+    }
+
+    #[test]
+    fn validator_multiline_editing() {
+        // 完整输入放行
+        assert!(matches!(
+            validate_input("(+ 1 2)"),
+            ValidationResult::Valid(None)
+        ));
+        assert!(matches!(
+            validate_input("  "),
+            ValidationResult::Valid(None)
+        ));
+        assert!(matches!(
+            validate_input("(define (f x)\n  (f x))"),
+            ValidationResult::Valid(None)
+        ));
+        // 未闭合 → 回车续行（同一缓冲多行编辑）
+        assert!(matches!(
+            validate_input("(+ 1"),
+            ValidationResult::Incomplete
+        ));
+        assert!(matches!(
+            validate_input("\"abc"),
+            ValidationResult::Incomplete
+        ));
+        // 词法错误 → 提示并可继续编辑修正
+        assert!(matches!(
+            validate_input("(a . )"),
+            ValidationResult::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn view_and_define_parsing() {
+        let read = |s: &str| match check_input(s) {
+            InputStatus::Complete(f) => f,
+            _ => panic!("read failed: {}", s),
+        };
+        // view_form_of
+        assert!(matches!(
+            view_form_of(&read("(view)")[0]),
+            Some(ViewReq::All)
+        ));
+        assert!(
+            matches!(view_form_of(&read("(view \"a.scm\")")[0]), Some(ViewReq::File(p)) if p == "a.scm")
+        );
+        assert!(
+            matches!(view_form_of(&read("(view 'fact)")[0]), Some(ViewReq::Name(n)) if sym_str(n) == "fact")
+        );
+        assert!(view_form_of(&read("(view 1 2)")[0]).is_none());
+        assert!(view_form_of(&read("(vi-ew)")[0]).is_none());
+        // defined_name
+        assert!(matches!(defined_name(&read("(define x 1)")[0]), Some(n) if sym_str(n) == "x"));
+        assert!(matches!(defined_name(&read("(define (f a) a)")[0]), Some(n) if sym_str(n) == "f"));
+        assert!(
+            matches!(defined_name(&read("(define-syntax m (syntax-rules () ((_ x) x)))")[0]), Some(n) if sym_str(n) == "m")
+        );
+        assert!(defined_name(&read("(+ 1 2)")[0]).is_none());
+        assert!(defined_name(&read("(define)")[0]).is_none());
     }
 
     #[test]

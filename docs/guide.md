@@ -2,7 +2,8 @@
 
 R5RS Scheme 解释器。启动：`cargo run` 进入 REPL，`cargo run -- file.scm` 执行文件。
 
-REPL 特性：`In [n]:` 编号提示符、括号未闭合自动续行、Tab 补全、语法高亮
+REPL 特性：`In [n]:` 编号提示符、多行编辑（括号未闭合回车自动续行，可
+跨行修改，历史整体召回）、Tab 补全、语法高亮
 （`--no-highlight` 关闭）、历史记录持久化、`(exit)` 或 Ctrl-D 退出、
 Ctrl-C 丢弃当前输入。
 
@@ -132,6 +133,9 @@ Prelude（启动自动加载，SRFI-1 子集）：
 
 - `(time expr)` — 计时并打印 `; time: X.XXX ms`
 - `(load "path")` — 成功打印 `; loaded path`
+- `(view)` — 高亮显示本会话所有求值成功的顶层定义
+- `(view 'name)` — 只看某个定义（含重定义历史中的最新版本）
+- `(view "path")` — 高亮显示文件内容
 - `(exit)` — 退出
 
 ## 杂项

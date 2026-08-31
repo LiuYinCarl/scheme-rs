@@ -1125,17 +1125,25 @@ fn vs(s: &str) -> Value {
 }
 
 fn parse_bindings(v: &Value) -> Result<(Vec<Sym>, Vec<Value>), String> {
-    let bs = proper_list(v).ok_or_else(|| "bad binding list".to_string())?;
+    const WANT: &str = "expected (name value)";
+    let bs = proper_list(v)
+        .ok_or_else(|| format!("bad binding list: {} ({})", write_to_string(v), WANT))?;
     let mut vars = Vec::new();
     let mut inits = Vec::new();
     for b in bs {
-        let pair = proper_list(&b).ok_or_else(|| "bad binding".to_string())?;
+        let pair = proper_list(&b)
+            .ok_or_else(|| format!("bad binding: {} ({})", write_to_string(&b), WANT))?;
         if pair.len() != 2 {
-            return Err("bad binding".into());
+            return Err(format!("bad binding: {} ({})", write_to_string(&b), WANT));
         }
         match &pair[0] {
             Value::Symbol(s) => vars.push(*s),
-            _ => return Err("binding name must be identifier".into()),
+            _ => {
+                return Err(format!(
+                    "binding name must be identifier: {}",
+                    write_to_string(&pair[0])
+                ))
+            }
         }
         inits.push(pair[1].clone());
     }

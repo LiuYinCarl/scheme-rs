@@ -632,3 +632,17 @@ fn ext_pretty_print() {
     let s = display_to_string(&v);
     assert!(s.contains('\n'), "expected multiline output, got: {}", s);
 }
+
+/// let 族绑定列表畸形时，报错要指出是哪个绑定有问题（括号错位的常见症状：
+/// body 被吞进绑定列表）。
+#[test]
+fn bad_binding_error_names_the_binding() {
+    let err = one("(letrec ((iter (lambda (n1 p) n1)) (iter n n)) 1)");
+    assert!(err.starts_with("ERROR:"));
+    assert!(err.contains("(iter n n)"), "got: {}", err);
+    assert!(err.contains("expected (name value)"), "got: {}", err);
+    // 非列表绑定
+    assert!(one("(let (x) 1)").contains("bad binding: x"));
+    // 绑定名不是标识符
+    assert!(one("(let ((1 2)) 3)").contains("binding name must be identifier: 1"));
+}

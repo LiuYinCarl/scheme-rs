@@ -56,3 +56,6 @@ SRFI-1 常用子集，纯 R5RS 实现，`include_str!` 内嵌、`standard_env`
 
 - `(time expr)` — 求值 expr 并打印 `; time: X.XXX ms`
 - `(load "path")` 成功时打印 `; loaded path`（嵌套 load 不打印）
+- `(view)` — 高亮列出本会话所有求值成功的顶层 `define`/`define-syntax`
+  （重定义只保留最新版本）；`(view 'name)` 只看某个定义；
+  `(view "path")` 高亮查看文件。非 TTY 模式自动退化为无颜色输出

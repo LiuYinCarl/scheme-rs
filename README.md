@@ -69,7 +69,9 @@ cargo bench --bench interpreter              # criterion benchmarks
 ```
 
 The REPL is Jupyter-styled (`src/repl.rs`): `In [n]:` / `Out[n]:` numbered
-prompts, continuation lines (`....:`) while a datum is unbalanced, ANSI
+prompts, multi-line editing (a validator keeps unbalanced input in one
+editable buffer — cursor can move across lines, and history recalls the
+whole multi-line entry at once), ANSI
 colors (auto-disabled when not a TTY), syntax highlighting
 (`--no-highlight` to disable), Tab completion from the live global
 environment plus special forms, persistent history
