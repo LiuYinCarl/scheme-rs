@@ -31,6 +31,10 @@ Multi-line editing, bignum arithmetic, and `(time)`:
 
 ![multiline demo](docs/screenshots/multiline.gif)
 
+Debugging: errors print a continuation trace, `trace` shows call history:
+
+![errors demo](docs/screenshots/errors.gif)
+
 Demos are recorded from scripted REPL sessions (`scripts/record_demos.sh`,
 asciinema + agg; see `scripts/demos/*.demo`). How to re-record or add demos:
 [docs/demos.md](docs/demos.md).

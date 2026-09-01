@@ -1,0 +1,22 @@
+# 调试工作流：简单例子 → 出错打印 scheme trace → trace 跟踪调用
+wait 2.5
+type (+ 1 2 3)
+key enter
+wait 0.7
+type (define (f x) (+ x (g x)))
+key enter
+wait 0.7
+type (define (g y) (car y))
+key enter
+wait 0.7
+type (f 1)
+key enter
+wait 1.5
+type (trace 'f)
+key enter
+wait 0.6
+type (f 2)
+key enter
+wait 1.5
+type (exit)
+key enter

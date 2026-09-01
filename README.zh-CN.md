@@ -31,6 +31,10 @@ REPL 基础（语法高亮、named `let`、精确有理数）：
 
 ![multiline demo](docs/screenshots/multiline.gif)
 
+调试：出错自动打印续延栈 trace，`trace` 查看调用历史：
+
+![errors demo](docs/screenshots/errors.gif)
+
 演示由脚本化 REPL 会话录制（`scripts/record_demos.sh`，
 asciinema + agg；见 `scripts/demos/*.demo`）。如何重新录制或新增演示：
 [docs/demos.md](docs/demos.md)。
