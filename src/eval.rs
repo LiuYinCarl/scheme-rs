@@ -305,17 +305,98 @@ pub fn run(state: State) -> Result<Value, String> {
     let mut m = Machine::new();
     let mut state = state;
     loop {
-        state = match state {
-            State::Eval(expr, env) => eval_step(&mut m, expr, env)?,
+        let step = match state {
+            State::Eval(expr, env) => eval_step(&mut m, expr, env),
             State::Return(v) => match m.cont.take() {
                 None => return Ok(v),
                 Some(frame) => {
                     m.cont = frame.parent.clone();
-                    resume(&mut m, &frame.kind, v)?
+                    resume(&mut m, &frame.kind, v)
                 }
             },
-            State::Apply(p, args) => apply(&mut m, p, args)?,
+            State::Apply(p, args) => apply(&mut m, p, args),
         };
+        state = match step {
+            Ok(s) => s,
+            Err(e) => {
+                print_trace(&m.cont);
+                return Err(e);
+            }
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Error trace（出错时的续延栈摘要，打到 stderr；不改变错误消息本身）
+
+/// 过程的可读标签：内建给名字，其余给类型（闭包体可能很大，不打印）。
+fn proc_label(p: &Value) -> String {
+    match p {
+        Value::Primitive(n) => n.to_string(),
+        Value::Closure(_) => "#<procedure>".into(),
+        Value::Continuation(_) => "#<continuation>".into(),
+        other => {
+            let s = write_to_string(other);
+            if s.len() > 40 {
+                format!("{}…", &s[..40])
+            } else {
+                s
+            }
+        }
+    }
+}
+
+fn frame_label(kind: &ContKind) -> String {
+    match kind {
+        ContKind::If { .. } => "if".into(),
+        ContKind::Begin { .. } => "begin".into(),
+        ContKind::Define { name, .. } => format!("define {}", sym_str(*name)),
+        ContKind::Set { name, .. } => format!("set! {}", sym_str(*name)),
+        ContKind::OpDone { .. } => "combination: evaluating operator".into(),
+        ContKind::ArgDone {
+            proc, collected, ..
+        } => format!(
+            "combination: argument #{} of {}",
+            collected.len() + 1,
+            proc_label(proc)
+        ),
+        ContKind::And { .. } => "and".into(),
+        ContKind::Or { .. } => "or".into(),
+        ContKind::BodyInit { .. } => "let/letrec: init".into(),
+        ContKind::DynWindBefore { .. } => "dynamic-wind: before".into(),
+        ContKind::DynWindBody { .. } => "dynamic-wind: body".into(),
+        ContKind::DynWindAfter { .. } => "dynamic-wind: after".into(),
+        ContKind::WindSteps { .. } => "dynamic-wind: wind steps".into(),
+        ContKind::Force { .. } => "force".into(),
+        ContKind::Map { .. } => "map".into(),
+        ContKind::ForEach { .. } => "for-each".into(),
+        ContKind::CallWithValues { .. } => "call-with-values".into(),
+        ContKind::Load { .. } => "load".into(),
+        ContKind::ClosePortAfter { .. } => "port cleanup".into(),
+        ContKind::GetOutputString { .. } => "get-output-string".into(),
+        ContKind::TraceReturn { .. } => "trace".into(),
+    }
+}
+
+/// 出错时把续延帧链（栈顶 = 最内层）打印到 stderr，最多 15 帧。
+/// 走 stderr 而非 Scheme 输出端口：不影响捕获 stdout 的测试与调用方。
+fn print_trace(cont: &Cont) {
+    const MAX: usize = 15;
+    let mut lines = Vec::new();
+    let mut cur = cont;
+    while let Some(f) = cur {
+        lines.push(frame_label(&f.kind));
+        cur = &f.parent;
+    }
+    if lines.is_empty() {
+        return;
+    }
+    eprintln!("; scheme trace (innermost first):");
+    for (i, line) in lines.iter().take(MAX).enumerate() {
+        eprintln!(";   {}: {}", i, line);
+    }
+    if lines.len() > MAX {
+        eprintln!(";   ... {} more frame(s)", lines.len() - MAX);
     }
 }
 

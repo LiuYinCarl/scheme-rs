@@ -51,7 +51,7 @@ file-exists? delete-file pretty-print trace untrace require` 与
 | **重复模式变量不查错** | 同一 pattern 里同一模式变量出现两次时后绑定覆盖先绑定（R5RS 说 an error，我们不做检查）。 |
 | **同层单 ellipsis** | pattern 同一层出现两个 ellipsis（`x ... y ...`）只处理第一个。 |
 | **宏生成宏的深度** | rename 锚定单层 def_env；极端合成宏没有完整语法对象系统的保证（已知局限，见 syntax-rules.md）。 |
-| **报错信息** | 不含源码位置；`error` 过程打印参数后以非零退出/可捕获错误呈现。 |
+| **报错信息** | 不含源码位置；`error` 过程打印参数后以非零退出/可捕获错误呈现。求值出错时会把当前续延帧链摘要打到 stderr（`; scheme trace`，最内层在前，封顶 15 帧）——它是"剩余计算"的路径而非调用历史：尾调用按设计不留帧，需要调用历史时用 `(trace '名字)`。 |
 | **gensym 可伪造** | 卫生靠"gensym 名字带空格、reader 读不出来"假设；但 `(string->symbol " if.3")` 走同一 intern 表可拿到同一个符号，理论上有意构造的用户代码可击穿卫生边界。 |
 | **`GLOBAL_ENV` 是 ambient authority** | `load`、`(trace 'sym)`、environment specifier 读的都是"最后一次 `standard_env()` 创建的环境"。单 REPL/单测试下与实际运行环境一致；同线程创建第二个 env（嵌入宿主）时会静默错位。 |
 | **thread_local 不随 `standard_env` 重置** | RNG 状态、trace 表、计时起点是线程本地全局量；测试/嵌入场景多次建 env 时它们保持延续，不复位。 |
