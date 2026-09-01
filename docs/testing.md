@@ -133,19 +133,22 @@ Rust 栈；`src/value.rs` 的 `Pair::drop` 已改为迭代拆链（子进程方�
 
 ## Rust 测试结构
 
-- `tests/r5rs_suites.rs`（17 个测试）：`suites::*`（三套件进程内）、
+- `tests/r5rs_suites.rs`（20 个测试）：`suites::*`（三套件进程内）、
   `programs::*`（15 个真实程序进程内，各占一个测试以并行）、
+  `libs::scheme_libs`（遍历 tests/scm/libs/*-test.scm，每个文件在全新
+  环境里配 `check` 断言器求值，覆盖 src/libs/ 标准库模块）、
   `cli::smoke_run_file`（唯一的子进程冒烟测试）。
-- `tests/scheme_units.rs`（27 个）：reader/printer 往返、精确算术与
+- `tests/scheme_units.rs`（55 个）：reader/printer 往返、精确算术与
   进制、`#` 占位数字、inexact 整函数、超越函数、5×10⁵ 尾递归与各
   尾位置、call/cc 多射重入、dynamic-wind 逃逸/重入、syntax-rules
   卫生（定义处解析、不捕获、嵌套/零次重复 ellipsis、`(... ...)`）、
   嵌套 quasiquote、等价谓词（含环形结构）、promise 缓存与重入、
   字符串端口、`values`、脚本未闭合报错（子进程）。
-- `src/repl.rs` 内 `#[cfg(test)]`（3 个）：datum 完整性判断、补全
-  词表生成、补全起点计算。
+- crate 内 `#[cfg(test)]`（9 个，含 `src/repl.rs` 的 3 个：datum 完整性
+  判断、补全词表生成、补全起点计算）。
 
-合计 50 个测试（28 单元 + 3 REPL + 19 集成），CI 在 Ubuntu 与 macOS 双平台运行。
+合计 84 个测试（55 scheme_units + 20 r5rs_suites + 9 crate 内单元），
+CI 在 Ubuntu 与 macOS 双平台运行。
 
 ## 覆盖率
 

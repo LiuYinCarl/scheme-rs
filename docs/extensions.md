@@ -40,7 +40,7 @@ trace 输出示例：
 
 ## 模块库（src/libs/*.scm）
 
-借自 SRFI-1 / Python / Ruby 标准库的常用工具，纯 R5RS 实现，
+借自 SRFI-1 / OCaml / Python / Ruby 标准库的常用工具，纯 R5RS 实现，
 **运行时从磁盘加载**（不内嵌进二进制，改了 .scm 文件直接生效）。
 搜索路径按优先级：可执行文件旁的 `lib/`（release 包布局）、当前目录
 的 `lib/`、当前目录的 `src/libs/`（仓库内开发布局）。
@@ -53,6 +53,11 @@ trace 输出示例：
 `last` `take` `drop` `take-while` `drop-while` `find`（无则 #f）
 `any` `every` `zip` `partition` `delete-duplicates` `sort`（稳定归并排序，
 `(sort xs less?)`）
+
+OCaml `List` 风格：`filter-map` `mapi` `iteri` `flatten` `init`
+（`(init n f)` => `((f 0) … (f n-1))`）`split`（unzip）`rev-map`
+`merge`（归并两个有序表）`for-all` `exists`（语义同 `every`/`any`）
+`count`
 
 ```scheme
 (require 'list)
@@ -67,10 +72,79 @@ trace 输出示例：
 `string-suffix?` `string-contains?`（返回下标或 #f）`string-split`
 `string-join` `string-replace`
 
+OCaml `String` 风格：`string-upcase` `string-downcase` `string-capitalize`
+`string-uncapitalize` `string-concat`（参数顺序同 OCaml）
+`string-index`（返回下标或 #f）`string-map` `string-iteri` `string-fold`
+`string-for-all` `string-exists`
+
 ```scheme
 (require 'string)
 (string-split "a,b,c" #\,)       ; => ("a" "b" "c")
 (string-replace "a-b" "-" "+")   ; => "a+b"
+```
+
+### `(require 'option)` / `(require 'result)` — 可空值与错误值（OCaml 风格）
+
+option：`none` 是符号 `none`，`(some v)` 构造 `(some v)`；
+`some?` `none?` `option-map` `option-bind` `option-get`（none 时报错）
+`option-get-or` `option-filter` `option-iter` `option->list`。
+
+result：`(ok v)` / `(err e)`；`ok?` `err?` `result-map` `result-map-err`
+`result-bind` `result-get` `result-get-err` `result-get-or`。
+
+### `(require 'vector)` — 向量工具（OCaml Array 风格）
+
+`vector-copy` `vector-map` `vector-mapi` `vector-for-each` `vector-iteri`
+`vector-fold-left` `vector-fold-right` `vector-find`（返回下标或 #f）
+`vector-for-all` `vector-exists` `vector-append`（可变参）`vector-reverse`
+`vector-count` `vector-sort`（返回新向量，稳定归并排序）
+`vector-binary-search`（有序向量，返回下标或 #f）
+
+### `(require 'stream)` — 惰性流（OCaml Seq 风格，delay/force 实现）
+
+流是一个 promise，求值得 `()` 或 `(头 . 流)`。`stream-null`
+`stream-null?` `stream-cons`（宏，延迟尾流）`stream-car` `stream-cdr`
+`list->stream` `stream->list`（仅有限流）`stream-take` `stream-drop`
+`stream-map` `stream-filter` `stream-append` `stream-iterate`
+`stream-unfold` `integers-from` `stream-range`（半开区间）
+`stream-ref` `stream-for-each` `stream-fold`
+
+```scheme
+(require 'stream)
+(stream-take (integers-from 0) 5)                 ; => (0 1 2 3 4)
+(stream-take (stream-filter odd? (integers-from 0)) 4)  ; => (1 3 5 7)
+```
+
+### `(require 'map)` / `(require 'set)` — 有序映射与集合（OCaml Map/Set 风格）
+
+不可变 AVL 树，键序由用户比较器 `(lt? a b)` 决定；修改操作纯函数式，
+返回新结构（持久化）。map：`make-map` `map-add` `map-find`（未命中
+返回 #f，有歧义时用 `map-member?` 区分）`map-member?` `map-remove`
+`map-size` `map-keys` `map-values` `map->alist`（有序）`alist->map`
+`map-fold`。set：`make-set` `set-add` `set-member?` `set-remove`
+`set-size` `set->list` `list->set` `set-union` `set-intersection`
+`set-difference` `set-fold` `set-subset?`（set 复用 map 的树实现，
+二元运算要求两边比较器相同）。
+
+```scheme
+(require 'map)
+(define m (map-add (map-add (make-map <) 2 'b) 1 'a))
+(map->alist m)   ; => ((1 . a) (2 . b))
+```
+
+### `(require 'format)` / `(require 'buffer)` — 格式化与字符串缓冲
+
+format（OCaml Printf / SRFI-28/48 子集）：`(sprintf fmt . args)`，指令
+`~a`（display）`~s`（write）`~%`（换行）`~~`；`(format dest fmt . args)`
+的 dest 为 `#t`（当前输出端口）/ 输出端口 / `#f`（同 sprintf）。
+
+buffer（OCaml Buffer，字符串输出端口的薄封装）：`make-buffer`
+`buffer-display` `buffer-write` `buffer-newline` `buffer-contents`
+（行为同 `get-output-string`）`buffer-length`。
+
+```scheme
+(require 'format)
+(sprintf "~a + ~a = ~s" 1 2 3)   ; => "1 + 2 = 3"
 ```
 
 ## REPL 专属（src/repl.rs）

@@ -124,11 +124,15 @@ REPL 特性：`In [n]:` 编号提示符、多行编辑（括号未闭合回车�
 
 模块库（需主动加载，见 extensions.md）：
 
-- `(require 'list)` — `iota filter fold fold-right reduce last take drop
-  take-while drop-while find any every zip partition delete-duplicates sort`
-- `(require 'string)` — `string-reverse string-repeat string-trim
-  string-prefix? string-suffix? string-contains? string-split string-join
-  string-replace`
+- `(require 'list)` / `(require 'string)` — 列表/字符串工具，含 OCaml
+  `List`/`String` 风格函数（`filter-map mapi init split merge`
+  `string-map string-fold` 等）
+- `(require 'option)` / `(require 'result)` — 可空值与错误值（OCaml 风格）
+- `(require 'vector)` / `(require 'stream)` — 向量工具与惰性流
+- `(require 'map)` / `(require 'set)` — 有序映射与集合
+- `(require 'format)` / `(require 'buffer)` — 格式化与字符串缓冲
+
+各模块的完整函数清单见 extensions.md。
 
 ```scheme
 (require 'list)

@@ -41,7 +41,7 @@ asciinema + agg; see `scripts/demos/*.demo`). How to re-record or add demos:
 | SISC R5RS pitfalls（`tests/scm/r5rs_pitfall.scm`） | **22/22**（letrec+call/cc、多射续延、卫生宏、TCO 等最刁钻用例） |
 | R5RS 报告示例提取套件（`tests/scm/r5rs-examples.scm`） | **253/253** |
 | 真实程序（`tests/scm/programs/`：11 个 Gabriel 基准 + SICP mceval/amb/regmach + Schelog） | **15/15 全过**，含 nboyer 精确命中 **95024 rewrites**、SICP 第 5 章编译器、Prolog 嵌入 |
-| Rust 单元 + 集成测试 | **56 个**（34 单元 + 3 REPL + 19 集成；统一入口 `scripts/test.sh`） |
+| Rust 单元 + 集成测试 | **84 个**（55 scheme_units + 20 r5rs_suites + 9 crate 内单元；统一入口 `scripts/test.sh`） |
 | 行覆盖率（cargo-llvm-cov） | **75.17%**（CI 门禁 70） |
 | CI | fmt / clippy / test（**Ubuntu + macOS**）/ coverage / bench 全绿 |
 
@@ -79,7 +79,8 @@ cargo test                       # unit + integration tests (must be green)
 - [docs/syntax-rules.md](docs/syntax-rules.md) — 宏系统与重命名式卫生
 - [docs/numeric-tower.md](docs/numeric-tower.md) — 数字塔与精确性规则
 - [docs/r5rs-compliance.md](docs/r5rs-compliance.md) — R5RS 符合性清单与有意偏差
-- [docs/extensions.md](docs/extensions.md) — R5RS 之外的扩展（random/runtime/trace/pretty-print/prelude 等）
+- [docs/extensions.md](docs/extensions.md) — R5RS 之外的扩展（random/runtime/trace/pretty-print 等）与纯 Scheme 标准库模块（list/string/option/result/vector/stream/map/set/format/buffer）
+- [docs/demos.md](docs/demos.md) — README 演示 gif 的录制方法
 - [docs/testing.md](docs/testing.md) — 测试体系、覆盖率与全部结果
 - [docs/benchmarks.md](docs/benchmarks.md) — 性能专题：criterion 与实战程序耗时
 
@@ -186,8 +187,6 @@ discard the current input, `(exit)` or Ctrl-D to quit.
 - `scheme-report-environment` / `null-environment` return the full interaction
   environment rather than a restricted report-only environment.
 - `char-ready?` always returns `#t`.
-- `with-input-from-file` / `with-output-to-file` restore ports on normal
-  return only (not on continuation jumps).
 
 ## Case sensitivity
 
@@ -203,7 +202,7 @@ whitelist (see `tests/r5rs_suites.rs`).
 
 ## Tests
 
-- `tests/r5rs_suites.rs` runs the three bundled suites as subprocesses:
+- `tests/r5rs_suites.rs` runs the three bundled suites in process:
   - `tests/scm/r5rs-tests.scm` (chibi R5RS suite): **188/189 pass**; the one
     remaining case is the case-sensitivity conflict above (whitelisted).
   - `tests/scm/r5rs_pitfall.scm` (SISC pitfalls): **all pass** (1.1–8.3,
@@ -223,3 +222,7 @@ whitelist (see `tests/r5rs_suites.rs`).
   hygiene (definition-site resolution, no capture, nested ellipsis,
   `(... ...)` escape), nested quasiquote, equivalence predicates, case
   folding, string ports, `values`.
+- `tests/scm/libs/*-test.scm`: one Scheme test file per stdlib module in
+  `src/libs/` (list/string/option/result/vector/stream/map/set/format/
+  buffer), driven by the `libs::scheme_libs` test in `tests/r5rs_suites.rs`
+  with a `check` assertion harness.

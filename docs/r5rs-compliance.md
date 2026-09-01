@@ -45,6 +45,7 @@ file-exists? delete-file pretty-print trace untrace require` 与
 | **指数标记** | 浮点指数只支持 `e/E`；R5RS 词法里的 `s f d l` 精度标记未支持。 |
 | **`scheme-report-environment`/`null-environment`** | 返回完整交互环境，而非裁剪过的"只含报告绑定"环境。 |
 | **`char-ready?`** | 恒 `#t`。 |
+| **`with-input-from-file`/`with-output-to-file` 的重入** | 端口在动态逃逸/重入时通过 dynamic-wind 钩子正确恢复；但在其中捕获的续延被重入时，PortLeave 已把端口关闭，重入的动态范围里再写该端口会失败（R5RS 对此未作规定，本实现选择在逃逸时关闭）。 |
 | **嵌套 `run()` 的续延截断** | quasiquote 的 unquote 求值与 `eval` 内建过程是递归调用求值器实现的；在其中捕获的续延不包含外层机器栈（R5RS 对 `eval` 内捕获续延本就接近未规定；quasiquote 内进行续延跳转的代码极为罕见）。 |
 | **`case` 脱糖依赖 `memv`** | `case` 脱糖成 `(if (memv k '(datums...)) ...)`，若用户局部重定义了 `memv`，`case` 会用到它（理论上应引用定义处绑定；实际影响几乎为零）。 |
 | **重复模式变量不查错** | 同一 pattern 里同一模式变量出现两次时后绑定覆盖先绑定（R5RS 说 an error，我们不做检查）。 |
