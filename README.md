@@ -7,6 +7,24 @@ an explicit, persistent continuation stack (a trampoline), giving proper tail
 recursion, first-class multi-shot continuations, and correct `dynamic-wind`
 re-entry — without using native Rust recursion for evaluation.
 
+## Demo
+
+REPL basics (syntax highlighting, named `let`, exact rationals):
+
+![repl demo](docs/screenshots/repl.gif)
+
+First-class `call/cc` (escape, then re-enter a stored continuation):
+
+![call/cc demo](docs/screenshots/callcc.gif)
+
+Standard library via `require` + `trace` on a library function:
+
+![stdlib demo](docs/screenshots/stdlib.gif)
+
+Demos are recorded from scripted REPL sessions (`scripts/record_demos.sh`,
+asciinema + agg; see `scripts/demos/*.demo`). How to re-record or add demos:
+[docs/demos.md](docs/demos.md).
+
 ## 测试与性能（摘要）
 
 | 验证项 | 结果 |

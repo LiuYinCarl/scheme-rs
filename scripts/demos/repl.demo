@@ -1,0 +1,19 @@
+# REPL 基础：求值、定义、高阶函数、尾递归
+wait 2.5
+type (+ 1 2 3)
+key enter
+wait 0.8
+type (define (square x) (* x x))
+key enter
+wait 0.8
+type (map square '(1 2 3 4 5))
+key enter
+wait 0.8
+type (let loop ((n 5) (acc 1)) (if (= n 0) acc (loop (- n 1) (* acc n))))
+key enter
+wait 1.0
+type (/ 22 7)
+key enter
+wait 1.2
+type (exit)
+key enter

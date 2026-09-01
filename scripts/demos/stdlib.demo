@@ -1,0 +1,22 @@
+# 标准库 require + trace 跟踪
+wait 2.5
+type (require 'list)
+key enter
+wait 0.8
+type (filter odd? (iota 10))
+key enter
+wait 0.8
+type (require 'string)
+key enter
+wait 0.6
+type (string-split "a,b,,c" #\,)
+key enter
+wait 1.0
+type (trace 'sort)
+key enter
+wait 0.5
+type (sort '(3 1 2) <)
+key enter
+wait 1.5
+type (exit)
+key enter

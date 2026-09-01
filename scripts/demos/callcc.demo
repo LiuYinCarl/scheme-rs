@@ -1,0 +1,16 @@
+# call/cc：直通逃逸 + 续延存起来跨表达式重入
+wait 2.5
+type (+ 1 (call/cc (lambda (k) (k 2) 3)))
+key enter
+wait 1.0
+type (define k #f)
+key enter
+wait 0.6
+type (+ 10 (call/cc (lambda (c) (set! k c) 1)))
+key enter
+wait 1.0
+type (k 100)
+key enter
+wait 1.2
+type (exit)
+key enter
