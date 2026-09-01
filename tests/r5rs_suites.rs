@@ -219,6 +219,50 @@ mod programs {
     }
 }
 
+/// Pure-Scheme stdlib modules (src/libs/*.scm): every tests/scm/libs/*-test.scm
+/// is evaluated in a fresh env with the `check` harness prepended; any FAIL
+/// line or evaluation error fails the test.
+mod libs {
+    use super::*;
+
+    const HARNESS: &str = r#"
+(define (check e a)
+  (if (equal? e a)
+      #t
+      (begin (display "FAIL: expected ") (write e)
+             (display " got ") (write a) (newline))))
+"#;
+
+    #[test]
+    fn scheme_libs() {
+        let dir = manifest_path("tests/scm/libs");
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", dir, e))
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("scm"))
+            .collect();
+        entries.sort();
+        assert!(!entries.is_empty(), "no scheme lib tests found in {}", dir);
+        for path in entries {
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
+            let src = format!("{}\n{}", HARNESS, body);
+            let env = standard_env();
+            let (r, out) = eval_captured(&env, &src);
+            assert!(r.is_ok(), "{}: eval error: {:?}", path.display(), r.err());
+            assert!(
+                !out.contains("FAIL"),
+                "{}: failures:\n{}",
+                path.display(),
+                out.lines()
+                    .filter(|l| l.contains("FAIL"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+    }
+}
+
 mod cli {
     /// Subprocess smoke test: the CLI file-execution path must keep working.
     #[test]

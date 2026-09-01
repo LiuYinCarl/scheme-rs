@@ -3,6 +3,9 @@
 ;;; 用法：(require 'list)
 ;;; 全部是 R5RS 之外的新名字；不 require 就不会出现在全局环境里，
 ;;; 不会和用户自己的同名定义混淆。
+;;;
+;;; 另含 OCaml List 风格函数：filter-map mapi iteri flatten init split
+;;; rev-map merge for-all exists count（for-all/exists 语义同 any/every）
 
 ;;; (iota count) 或 (iota count start step)：等差列表
 (define (iota count . maybe)
@@ -124,3 +127,79 @@
                (left (reverse (car h)))
                (right (cdr h)))
           (merge (sort left less?) (sort right less?))))))
+
+;;; map 并丢弃 #f 结果
+(define (filter-map f xs)
+  (if (null? xs)
+      '()
+      (let ((v (f (car xs))))
+        (if v
+            (cons v (filter-map f (cdr xs)))
+            (filter-map f (cdr xs))))))
+
+;;; 带下标的 map：f 接收下标和元素
+(define (mapi f xs)
+  (let loop ((i 0) (xs xs))
+    (if (null? xs)
+        '()
+        (cons (f i (car xs)) (loop (+ i 1) (cdr xs))))))
+
+;;; 带下标的遍历（仅副作用），返回 ()
+(define (iteri f xs)
+  (let loop ((i 0) (xs xs))
+    (if (null? xs)
+        '()
+        (begin (f i (car xs)) (loop (+ i 1) (cdr xs))))))
+
+;;; 拼接列表的列表
+(define (flatten xss)
+  (if (null? xss)
+      '()
+      (append (car xss) (flatten (cdr xss)))))
+
+;;; (init n f) => ((f 0) (f 1) ... (f n-1))，n <= 0 时为空表
+(define (init n f)
+  (let loop ((i 0) (acc '()))
+    (if (>= i n)
+        (reverse acc)
+        (loop (+ i 1) (cons (f i) acc)))))
+
+;;; 二元组列表解 zip：(split '((a 1) (b 2))) => ((a b) (1 2))
+(define (split pairs)
+  (if (null? pairs)
+      (list '() '())
+      (let ((r (split (cdr pairs))))
+        (list (cons (caar pairs) (car r))
+              (cons (cadar pairs) (cadr r))))))
+
+;;; 逆序 map：(rev-map f '(1 2 3)) => ((f 3) (f 2) (f 1))
+(define (rev-map f xs)
+  (let loop ((xs xs) (acc '()))
+    (if (null? xs)
+        acc
+        (loop (cdr xs) (cons (f (car xs)) acc)))))
+
+;;; 归并两个已按 lt? 排好序的列表（稳定）
+(define (merge lt? xs ys)
+  (cond ((null? xs) ys)
+        ((null? ys) xs)
+        ((lt? (car ys) (car xs)) (cons (car ys) (merge lt? xs (cdr ys))))
+        (else (cons (car xs) (merge lt? (cdr xs) ys)))))
+
+;;; 全部/任一元素满足 pred（OCaml 命名，语义同 every/any）
+(define (for-all pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (for-all pred (cdr xs)))
+        (else #f)))
+
+(define (exists pred xs)
+  (cond ((null? xs) #f)
+        ((pred (car xs)) #t)
+        (else (exists pred (cdr xs)))))
+
+;;; 满足 pred 的元素个数
+(define (count pred xs)
+  (let loop ((xs xs) (n 0))
+    (cond ((null? xs) n)
+          ((pred (car xs)) (loop (cdr xs) (+ n 1)))
+          (else (loop (cdr xs) n)))))
