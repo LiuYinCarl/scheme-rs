@@ -32,8 +32,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      # 与 CI/本地同一入口：fmt + clippy + 全部测试，绿了才构建发布包
+      - name: fmt + clippy + test
+        shell: bash
+        run: bash scripts/test.sh
 
       # tag 必须与 Cargo.toml 的 version 一致，防止发错版本
       - name: check tag matches Cargo.toml version

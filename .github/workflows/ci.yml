@@ -45,11 +45,12 @@ jobs:
       # Current measured line coverage (local, 2026-08): 75.17% lines
       # (3918 lines total). The --fail-under-lines threshold of 70 is set
       # ~5 points below that measurement.
+      # 单次收集：lcov 产物 + summary 输出 + 70 行覆盖门禁
+      # （同 scripts/test.sh --coverage 的参数）
       - name: coverage (lcov + summary)
         run: |
-          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-          cargo llvm-cov --all-features --workspace --summary-only
-          cargo llvm-cov --all-features --workspace --fail-under-lines 70 --summary-only
+          cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info \
+            --fail-under-lines 70
 
       - name: coverage (html report)
         run: cargo llvm-cov report --html
