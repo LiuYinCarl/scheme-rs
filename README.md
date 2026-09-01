@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/LiuYinCarl/scheme-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/LiuYinCarl/scheme-rs/actions/workflows/ci.yml)
 
+[中文版 README](README.zh-CN.md)
+
 An R5RS Scheme interpreter written in Rust: a tree-walking evaluator built on
 an explicit, persistent continuation stack (a trampoline), giving proper tail
 recursion, first-class multi-shot continuations, and correct `dynamic-wind`
@@ -33,56 +35,57 @@ Demos are recorded from scripted REPL sessions (`scripts/record_demos.sh`,
 asciinema + agg; see `scripts/demos/*.demo`). How to re-record or add demos:
 [docs/demos.md](docs/demos.md).
 
-## 测试与性能（摘要）
+## Tests & performance (summary)
 
-| 验证项 | 结果 |
+| Check | Result |
 |---|---|
-| chibi R5RS 套件（`tests/scm/r5rs-tests.scm`） | **188/189**（1 例白名单：大小写冲突，见[说明](docs/testing.md)） |
-| SISC R5RS pitfalls（`tests/scm/r5rs_pitfall.scm`） | **22/22**（letrec+call/cc、多射续延、卫生宏、TCO 等最刁钻用例） |
-| R5RS 报告示例提取套件（`tests/scm/r5rs-examples.scm`） | **253/253** |
-| 真实程序（`tests/scm/programs/`：11 个 Gabriel 基准 + SICP mceval/amb/regmach + Schelog） | **15/15 全过**，含 nboyer 精确命中 **95024 rewrites**、SICP 第 5 章编译器、Prolog 嵌入 |
-| Rust 单元 + 集成测试 | **84 个**（55 scheme_units + 20 r5rs_suites + 9 crate 内单元；统一入口 `scripts/test.sh`） |
-| 行覆盖率（cargo-llvm-cov） | **75.17%**（CI 门禁 70） |
-| CI | fmt / clippy / test（**Ubuntu + macOS**）/ coverage / bench 全绿 |
+| chibi R5RS suite (`tests/scm/r5rs-tests.scm`) | **188/189** (1 whitelisted case: case-sensitivity conflict, see [notes](docs/testing.md)) |
+| SISC R5RS pitfalls (`tests/scm/r5rs_pitfall.scm`) | **22/22** (the trickiest cases: letrec+call/cc, multi-shot continuations, hygienic macros, TCO, etc.) |
+| R5RS report examples extraction suite (`tests/scm/r5rs-examples.scm`) | **253/253** |
+| Real programs (`tests/scm/programs/`: 11 Gabriel benchmarks + SICP mceval/amb/regmach + Schelog) | **15/15 pass**, including nboyer hitting exactly **95024 rewrites**, the SICP chapter-5 compiler, and an embedded Prolog |
+| Rust unit + integration tests | **84** (55 scheme_units + 20 r5rs_suites + 9 in-crate unit tests; single entry point `scripts/test.sh`) |
+| Line coverage (cargo-llvm-cov) | **75.17%** (CI gate: 70) |
+| CI | fmt / clippy / test (**Ubuntu + macOS**) / coverage / bench all green |
 
-性能参考（criterion，2026-08-30 实测，Apple M5 / arm64 / 24GB / macOS 26.6，
-`cargo bench --bench interpreter`）：
+Performance reference (criterion, measured 2026-08-30, Apple M5 / arm64 / 24GB / macOS 26.6,
+`cargo bench --bench interpreter`):
 
-| 用例 | 耗时 | 说明 |
+| Case | Time | Notes |
 |---|---|---|
-| `fib_recursion_20` | 29.3 ms | 普通递归调用 |
-| `tail_loop_100k` | 212.8 ms | 10 万次尾调用（常数栈，验证 TCO 路径） |
-| `map_over_1000` | 4.9 ms | 内建 map + 闭包调用 |
-| `string_and_number_mix` | 661 µs | BigInt 运算 + 字符串拼接 |
-| `reader_r5rs_tests_scm` | 231 µs | reader 解析 ~10KB 源码 |
-| **nboyer(0)**（实战程序，非 criterion） | **3.4 s / 95024 rewrites** | ≈ 28k rewrites/s |
+| `fib_recursion_20` | 29.3 ms | plain recursive calls |
+| `tail_loop_100k` | 212.8 ms | 100k tail calls (constant stack, exercises the TCO path) |
+| `map_over_1000` | 4.9 ms | built-in map + closure calls |
+| `string_and_number_mix` | 661 µs | BigInt arithmetic + string concatenation |
+| `reader_r5rs_tests_scm` | 231 µs | reader parsing ~10KB of source |
+| **nboyer(0)** (real program, not criterion) | **3.4 s / 95024 rewrites** | ≈ 28k rewrites/s |
 
-详情：[docs/testing.md](docs/testing.md)（测试体系与全部结果）、
-[docs/benchmarks.md](docs/benchmarks.md)（性能专题与复现方法）。
+Details: [docs/testing.md](docs/testing.md) (test system and full results),
+[docs/benchmarks.md](docs/benchmarks.md) (performance deep-dive and how to reproduce).
 
 ## Usage
 
 ```
 cargo build
 cargo run -- path/to/file.scm   # run a file
-cargo run                        # REPL（语法高亮默认开启，--no-highlight 关闭）
+cargo run                        # REPL (syntax highlighting on by default, --no-highlight to disable)
 cargo test                       # unit + integration tests (must be green)
 ```
 
 ## Documentation
 
-中文设计文档（面向想学习解释器设计的读者）：
+Design documents (in Chinese, aimed at readers learning interpreter design):
 
-- [docs/guide.md](docs/guide.md) — 使用指南：全部可用函数与示例
-- [docs/architecture.md](docs/architecture.md) — 总体架构：trampoline
-  求值器、persistent 续延栈、call/cc、dynamic-wind、location 环境
-- [docs/syntax-rules.md](docs/syntax-rules.md) — 宏系统与重命名式卫生
-- [docs/numeric-tower.md](docs/numeric-tower.md) — 数字塔与精确性规则
-- [docs/r5rs-compliance.md](docs/r5rs-compliance.md) — R5RS 符合性清单与有意偏差
-- [docs/extensions.md](docs/extensions.md) — R5RS 之外的扩展（random/runtime/trace/pretty-print 等）与纯 Scheme 标准库模块（list/string/option/result/vector/stream/map/set/format/buffer）
-- [docs/demos.md](docs/demos.md) — README 演示 gif 的录制方法
-- [docs/testing.md](docs/testing.md) — 测试体系、覆盖率与全部结果
-- [docs/benchmarks.md](docs/benchmarks.md) — 性能专题：criterion 与实战程序耗时
+- [docs/guide.md](docs/guide.md) — usage guide: all available procedures with examples
+- [docs/architecture.md](docs/architecture.md) — overall architecture: the
+  trampoline evaluator, persistent continuation stack, call/cc,
+  dynamic-wind, location-based environments
+- [docs/syntax-rules.md](docs/syntax-rules.md) — the macro system and renaming-based hygiene
+- [docs/numeric-tower.md](docs/numeric-tower.md) — the numeric tower and exactness rules
+- [docs/r5rs-compliance.md](docs/r5rs-compliance.md) — R5RS compliance checklist and intentional deviations
+- [docs/extensions.md](docs/extensions.md) — extensions beyond R5RS (random/runtime/trace/pretty-print etc.) and the pure-Scheme stdlib modules (list/string/option/result/vector/stream/map/set/format/buffer)
+- [docs/demos.md](docs/demos.md) — how the README demo gifs are recorded
+- [docs/testing.md](docs/testing.md) — test system, coverage, and full results
+- [docs/benchmarks.md](docs/benchmarks.md) — performance deep-dive: criterion and real-program timings
 
 ## Development
 
