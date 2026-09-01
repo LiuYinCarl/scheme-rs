@@ -1,0 +1,16 @@
+# REPL 体验：多行编辑（括号未闭合不提交）+ bignum + (time)
+wait 2.5
+type (define (fact n)
+key enter
+wait 0.8
+type   (if (= n 0) 1 (* n (fact (- n 1)))))
+key enter
+wait 0.8
+type (fact 20)
+key enter
+wait 1.0
+type (time (fact 20))
+key enter
+wait 1.5
+type (exit)
+key enter

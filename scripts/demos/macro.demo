@@ -1,0 +1,19 @@
+# 卫生宏：define-syntax 定义 swap!，引入的临时变量不捕获用户绑定
+wait 2.5
+type (define-syntax swap! (syntax-rules () ((_ x y) (let ((t x)) (set! x y) (set! y t)))))
+key enter
+wait 0.8
+type (define x 1)
+key enter
+wait 0.5
+type (define y 2)
+key enter
+wait 0.5
+type (swap! x y)
+key enter
+wait 0.8
+type (list x y)
+key enter
+wait 1.2
+type (exit)
+key enter

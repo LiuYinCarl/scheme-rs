@@ -21,6 +21,14 @@ Standard library via `require` + `trace` on a library function:
 
 ![stdlib demo](docs/screenshots/stdlib.gif)
 
+Hygienic macros with `define-syntax`:
+
+![macro demo](docs/screenshots/macro.gif)
+
+Multi-line editing, bignum arithmetic, and `(time)`:
+
+![multiline demo](docs/screenshots/multiline.gif)
+
 Demos are recorded from scripted REPL sessions (`scripts/record_demos.sh`,
 asciinema + agg; see `scripts/demos/*.demo`). How to re-record or add demos:
 [docs/demos.md](docs/demos.md).

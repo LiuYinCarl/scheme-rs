@@ -76,8 +76,8 @@ def main():
     ap.add_argument("script")
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--bin", default=os.path.abspath("target/release/scheme-rs"))
-    ap.add_argument("--cols", type=int, default=90)
-    ap.add_argument("--rows", type=int, default=24)
+    ap.add_argument("--cols", type=int, default=100)
+    ap.add_argument("--rows", type=int, default=26)
     ap.add_argument("--settle", type=float, default=1.2,
                     help="extra record time after the last event")
     args = ap.parse_args()

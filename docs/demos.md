@@ -26,8 +26,9 @@ cargo build --release
 AGG_BIN=/tmp/agg-bin/agg AGG_FONT="Source Code Pro" bash scripts/record_demos.sh
 ```
 
-可覆盖的环境变量：`DEMO_SIZE`（默认 90x24）、`AGG_THEME`（monokai）、
-`AGG_SPEED`（1.3）、`AGG_BIN`、`AGG_FONT`。
+可覆盖的环境变量：`DEMO_SIZE`（默认 100x26）、`AGG_THEME`（monokai）、
+`AGG_SPEED`（1.3）、`AGG_FONT_SIZE`（默认 20，调大可提高清晰度）、
+`AGG_BIN`、`AGG_FONT`。
 
 ## 新增 / 修改 demo
 
