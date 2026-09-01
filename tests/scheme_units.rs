@@ -123,6 +123,54 @@ fn numbers_radix_strings() {
     assert_eq!(one("(rational? 3.5)"), "#t");
 }
 
+#[test]
+fn integer_division_arity() {
+    // used to panic (index out of bounds) or silently drop extra args
+    assert!(one("(quotient 5)").starts_with("ERROR"));
+    assert!(one("(remainder 5)").starts_with("ERROR"));
+    assert!(one("(modulo 5)").starts_with("ERROR"));
+    assert!(one("(modulo 5 3 2)").starts_with("ERROR"));
+    assert!(one("(quotient 5 3 2)").starts_with("ERROR"));
+}
+
+#[test]
+fn radix_bounds_checked() {
+    assert_eq!(one("(number->string 255 36)"), "\"73\"");
+    // out-of-range radix used to panic inside num-bigint
+    assert!(one("(number->string 255 37)").starts_with("ERROR"));
+    assert!(one("(number->string 255 1)").starts_with("ERROR"));
+    // huge radix used to truncate via `as u32`
+    assert!(one("(number->string 255 4294967297)").starts_with("ERROR"));
+    // rational printing path uses the radix too
+    assert!(one("(number->string 1/2 37)").starts_with("ERROR"));
+    assert!(one("(string->number \"ff\" 37)").starts_with("ERROR"));
+    assert!(one("(string->number \"10\" 1)").starts_with("ERROR"));
+    // extra args used to be ignored
+    assert!(one("(number->string 5 10 99)").starts_with("ERROR"));
+    assert!(one("(string->number \"5\" 10 99)").starts_with("ERROR"));
+}
+
+#[test]
+fn placeholder_digits_require_a_real_digit() {
+    // 1## == 100.0 stays valid; bare placeholders are not numbers (R5RS 7.1.1)
+    assert_eq!(one("1##"), "100.0");
+    assert_eq!(one("(string->number \"1##\")"), "100.0");
+    assert!(one("#d#").starts_with("ERROR: bad number"));
+    assert!(one("#x#").starts_with("ERROR: bad number"));
+    assert_eq!(one("(string->number \"#\")"), "#f");
+}
+
+#[test]
+fn integer_to_char_range_checked() {
+    assert_eq!(one("(integer->char 65)"), "#\\A");
+    assert_eq!(one("(char->integer #\\A)"), "65");
+    // used to truncate to #\x01 via `as u32`
+    assert!(one("(integer->char 4294967297)").starts_with("ERROR"));
+    assert!(one("(integer->char -1)").starts_with("ERROR"));
+    // UTF-16 surrogate half: not a valid char
+    assert!(one("(integer->char 55296)").starts_with("ERROR"));
+}
+
 // ---------------------------------------------------------------------------
 // Proper tail recursion (must complete in constant stack space)
 
@@ -296,6 +344,24 @@ fn printer_terminates_on_cycles() {
 }
 
 #[test]
+fn member_assoc_detect_cycles() {
+    // used to loop forever on circular lists
+    assert!(one("(let ((x (list 1 2))) (set-cdr! (cdr x) x) (memq 9 x))").starts_with("ERROR"));
+    assert!(one("(let ((x (list 1 2))) (set-cdr! (cdr x) x) (member 9 x))").starts_with("ERROR"));
+    assert!(one("(let ((x (list (list 'a 1)))) (set-cdr! x x) (assq 'b x))").starts_with("ERROR"));
+    assert!(one("(let ((x (list (list 'a 1)))) (set-cdr! x x) (assoc 'b x))").starts_with("ERROR"));
+    // a hit found before completing a lap still works
+    assert_eq!(
+        one("(let ((x (list 1 2))) (set-cdr! (cdr x) x) (car (memv 2 x)))"),
+        "2"
+    );
+    assert_eq!(
+        one("(let ((x (list (list 'a 1)))) (set-cdr! x x) (assv 'a x))"),
+        "(a 1)"
+    );
+}
+
+#[test]
 fn quasiquote_nested() {
     assert_eq!(
         one("`(a `(b ,(+ 1 2) ,(foo ,(+ 1 3) d) e) f)"),
@@ -344,6 +410,16 @@ fn string_ports_and_error() {
 }
 
 #[test]
+fn output_procedures_check_arity() {
+    // extra args used to be silently ignored
+    assert!(one("(write)").starts_with("ERROR"));
+    assert!(one("(write 1 2 3)").starts_with("ERROR"));
+    assert!(one("(display 1 2 3)").starts_with("ERROR"));
+    assert!(one("(write-char #\\a 1 2)").starts_with("ERROR"));
+    assert!(one("(pretty-print 'a 'b 'c)").starts_with("ERROR"));
+}
+
+#[test]
 fn values_and_call_with_values() {
     assert_eq!(one("(call-with-values (lambda () (values 1 2 3)) +)"), "6");
     assert_eq!(
@@ -381,6 +457,16 @@ fn inexact_integer_operations() {
     assert_eq!(one("(gcd 32 -36)"), "4");
     let env = standard_env();
     assert!(eval_in(&env, "(remainder 1.5 2)").is_err());
+}
+
+#[test]
+fn odd_even_accept_inexact_integers() {
+    // R5RS 6.2.5: integer-valued inexacts count as integers
+    assert_eq!(one("(odd? 3.0)"), "#t");
+    assert_eq!(one("(even? -4.0)"), "#t");
+    assert_eq!(one("(odd? -3)"), "#t");
+    assert!(one("(odd? 3.5)").starts_with("ERROR"));
+    assert!(one("(even? 'a)").starts_with("ERROR"));
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +571,19 @@ fn equal_cyclic_structures() {
     assert_eq!(
         one("(let ((s (cons 1 2)))
               (equal? (list s s) (list (cons 1 2) (cons 1 2))))"),
+        "#t"
+    );
+}
+
+/// equal? 沿 cdr 链迭代而不是 Rust 递归：500k 长度的列表比较不再爆
+/// Rust 栈（曾 SIGABRT；测试线程栈比主线程更小，更需要这个保证）。
+#[test]
+fn equal_long_lists_no_stack_overflow() {
+    assert_eq!(
+        one(
+            "(begin (define (mk n) (if (= n 0) '() (cons n (mk (- n 1)))))
+                    (equal? (mk 500000) (mk 500000)))"
+        ),
         "#t"
     );
 }

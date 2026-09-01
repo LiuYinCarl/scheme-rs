@@ -377,6 +377,14 @@ fn want_usize(name: &str, v: &Value) -> Result<usize, String> {
     }
 }
 
+fn want_radix(name: &str, v: &Value) -> Result<u32, String> {
+    let n = want_usize(name, v)?;
+    if !(2..=36).contains(&n) {
+        return Err(format!("{}: radix out of range (2-36): {}", name, n));
+    }
+    Ok(n as u32)
+}
+
 fn want_vec(name: &str, v: &Value) -> Result<Rc<RefCell<Vec<Value>>>, String> {
     match v {
         Value::Vector(x) => Ok(x.clone()),
@@ -421,9 +429,18 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
         "*" => ret(number::mul(&args)?),
         "/" => ret(number::div(&args)?),
         "=" | "<" | ">" | "<=" | ">=" => ret(number::compare(name, &args)?),
-        "quotient" => ret(number::quotient(&args)?),
-        "remainder" => ret(number::remainder(&args)?),
-        "modulo" => ret(number::modulo(&args)?),
+        "quotient" => {
+            arity(name, &args, 2)?;
+            ret(number::quotient(&args)?)
+        }
+        "remainder" => {
+            arity(name, &args, 2)?;
+            ret(number::remainder(&args)?)
+        }
+        "modulo" => {
+            arity(name, &args, 2)?;
+            ret(number::modulo(&args)?)
+        }
         "gcd" => ret(number::gcd(&args)?),
         "lcm" => ret(number::lcm(&args)?),
         "numerator" => {
@@ -503,23 +520,23 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             ret(number::inexact_to_exact(&args[0])?)
         }
         "number->string" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err("number->string: needs 1 or 2 args".into());
+            }
             let radix = if args.len() == 2 {
-                want_usize(name, &args[1])? as u32
+                want_radix(name, &args[1])?
             } else {
                 10
             };
-            if args.is_empty() {
-                return Err("number->string: needs args".into());
-            }
             ret(make_string(number::number_to_string(&args[0], radix)?))
         }
         "string->number" => {
-            if args.is_empty() {
-                return Err("string->number: needs args".into());
+            if args.is_empty() || args.len() > 2 {
+                return Err("string->number: needs 1 or 2 args".into());
             }
             let s = want_str(name, &args[0])?;
             let radix = if args.len() == 2 {
-                want_usize(name, &args[1])? as u32
+                want_radix(name, &args[1])?
             } else {
                 10
             };
@@ -555,14 +572,14 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
                     number::compare("<", &[v.clone(), Value::Int(num_bigint::BigInt::from(0))])?
                         .is_truthy()
                 }
-                "odd?" => match v {
-                    Value::Int(i) => i % 2 != num_bigint::BigInt::from(0),
-                    _ => return Err("odd?: not an integer".into()),
-                },
-                "even?" => match v {
-                    Value::Int(i) => i % 2 == num_bigint::BigInt::from(0),
-                    _ => return Err("even?: not an integer".into()),
-                },
+                "odd?" => {
+                    let (i, _) = number::want_integer(name, v)?;
+                    i % 2 != num_bigint::BigInt::from(0)
+                }
+                "even?" => {
+                    let (i, _) = number::want_integer(name, v)?;
+                    i % 2 == num_bigint::BigInt::from(0)
+                }
                 _ => unreachable!(),
             };
             ret(boolv(b))
@@ -694,9 +711,13 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
         "memq" | "memv" | "member" => {
             arity(name, &args, 2)?;
             let mut cur = args[1].clone();
+            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
             loop {
                 match cur {
                     Value::Pair(p) => {
+                        if !seen.insert(Rc::as_ptr(&p) as usize) {
+                            return Err(format!("{}: circular list", name));
+                        }
                         let (a, d) = {
                             let b = p.borrow();
                             (b.0.clone(), b.1.clone())
@@ -719,9 +740,13 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
         "assq" | "assv" | "assoc" => {
             arity(name, &args, 2)?;
             let mut cur = args[1].clone();
+            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
             loop {
                 match cur {
                     Value::Pair(p) => {
+                        if !seen.insert(Rc::as_ptr(&p) as usize) {
+                            return Err(format!("{}: circular list", name));
+                        }
                         let (a, d) = {
                             let b = p.borrow();
                             (b.0.clone(), b.1.clone())
@@ -822,7 +847,7 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
         "integer->char" => {
             arity(name, &args, 1)?;
             let n = want_usize(name, &args[0])?;
-            match char::from_u32(n as u32) {
+            match u32::try_from(n).ok().and_then(char::from_u32) {
                 Some(c) => ret(Value::Char(c)),
                 None => Err("integer->char: bad code point".into()),
             }
@@ -1236,8 +1261,8 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             ret(Value::Bool(true))
         }
         "write" | "display" => {
-            if args.is_empty() {
-                return Err(format!("{}: needs an argument", name));
+            if args.is_empty() || args.len() > 2 {
+                return Err(format!("{}: needs 1 or 2 args", name));
             }
             let p = if args.len() >= 2 {
                 want_port_out(name, &args[1])?
@@ -1262,8 +1287,8 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             ret(Value::Unspecified)
         }
         "write-char" => {
-            if args.is_empty() {
-                return Err("write-char: needs an argument".into());
+            if args.is_empty() || args.len() > 2 {
+                return Err("write-char: needs 1 or 2 args".into());
             }
             let c = want_char(name, &args[0])?;
             let p = if args.len() >= 2 {
@@ -1453,8 +1478,8 @@ pub fn dispatch(m: &mut Machine, name: &str, args: Vec<Value>) -> Result<State, 
             ret(Value::Unspecified)
         }
         "pretty-print" => {
-            if args.is_empty() {
-                return Err(format!("{}: needs an argument", name));
+            if args.is_empty() || args.len() > 2 {
+                return Err(format!("{}: needs 1 or 2 args", name));
             }
             let p = if args.len() >= 2 {
                 want_port_out(name, &args[1])?

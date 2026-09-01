@@ -216,7 +216,7 @@ pub fn compare(op: &str, args: &[Value]) -> Result<Value, String> {
 /// Accepts exact integers and inexact integer-valued reals (R5RS 6.2.5:
 /// "If any of the arguments is inexact, the result is inexact").
 /// Returns (value, is_inexact).
-fn want_integer(name: &str, v: &Value) -> Result<(BigInt, bool), String> {
+pub(crate) fn want_integer(name: &str, v: &Value) -> Result<(BigInt, bool), String> {
     match v {
         Value::Int(i) => Ok((i.clone(), false)),
         Value::Real(f) if f.fract() == 0.0 && f.is_finite() => {
@@ -648,6 +648,11 @@ fn parse_real_body(s: &str, radix: u32) -> Option<Value> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '#' | '.' | '+' | '-' | '/'))
         {
+            return None;
+        }
+        // R5RS 7.1.1: # 占位符前至少要有一个真实数字（"#d#" 不是数字）
+        let head = s.split('#').next().unwrap_or("");
+        if !head.chars().any(|c| c.is_digit(radix)) {
             return None;
         }
         let cleaned: String = s.chars().map(|c| if c == '#' { '0' } else { c }).collect();

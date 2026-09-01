@@ -329,17 +329,37 @@ fn equal_go(a: &Value, b: &Value, visited: &mut HashMap<usize, usize>) -> bool {
     }
     match (a, b) {
         (Pair(x), Pair(y)) => {
-            let (px, py) = (Rc::as_ptr(x) as usize, Rc::as_ptr(y) as usize);
-            if let Some(&seen) = visited.get(&px) {
-                return seen == py; // 环：按同构假设判定
-            }
-            visited.insert(px, py);
-            let (xa, xd, ya, yd) = {
-                let (bx, by) = (x.borrow(), y.borrow());
-                (bx.0.clone(), bx.1.clone(), by.0.clone(), by.1.clone())
+            // cdr 方向改为迭代（与 Pair::drop 同理：长表的链长可达几十万，
+            // 递归会撑爆 Rust 栈）；仅 car 方向保留递归，其深度受限于数据
+            // 的嵌套层级。迭代中沿途节点一直留在 visited 里（等价于递归版
+            // 的"当前路径"），退出循环时统一移除。
+            let mut chain: Vec<usize> = Vec::new();
+            let mut cur = (Rc::clone(x), Rc::clone(y));
+            let r = loop {
+                if Rc::ptr_eq(&cur.0, &cur.1) {
+                    break true;
+                }
+                let (px, py) = (Rc::as_ptr(&cur.0) as usize, Rc::as_ptr(&cur.1) as usize);
+                if let Some(&seen) = visited.get(&px) {
+                    break seen == py; // 环：按同构假设判定
+                }
+                visited.insert(px, py);
+                chain.push(px);
+                let (xa, xd, ya, yd) = {
+                    let (bx, by) = (cur.0.borrow(), cur.1.borrow());
+                    (bx.0.clone(), bx.1.clone(), by.0.clone(), by.1.clone())
+                };
+                if !equal_go(&xa, &ya, visited) {
+                    break false;
+                }
+                match (xd, yd) {
+                    (Pair(nx), Pair(ny)) => cur = (nx, ny),
+                    (da, db) => break equal_go(&da, &db, visited),
+                }
             };
-            let r = equal_go(&xa, &ya, visited) && equal_go(&xd, &yd, visited);
-            visited.remove(&px);
+            for px in chain {
+                visited.remove(&px);
+            }
             r
         }
         (Str(x), Str(y)) => *x.borrow() == *y.borrow(),
