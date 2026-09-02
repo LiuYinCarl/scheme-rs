@@ -137,14 +137,18 @@ def main():
                 pass
 
         # child exit detection (non-blocking)
-        done, _ = os.waitpid(pid, os.WNOHANG)
-        if done == pid:
-            child_done = True
-            if now > end_at - args.settle:  # app already quit
-                end_at = min(end_at, now + 0.4)
+        if not child_done:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                child_done = True
+                if now > end_at - args.settle:  # app already quit
+                    end_at = min(end_at, now + 0.4)
 
     # safety net: make sure the child is gone
-    done, _ = os.waitpid(pid, os.WNOHANG)
+    try:
+        done, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        done = pid  # already reaped in the loop above
     if done == 0:
         try:
             os.write(master, b"(exit)\r")
